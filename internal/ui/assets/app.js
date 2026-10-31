@@ -8,7 +8,7 @@
     ['cache', '缓存管理'], ['tasks', '解析任务'], ['security', '登录安全'],
     ['bans', '封禁管理'], ['server', '监听与 TLS'], ['account', '管理员账户']
   ];
-  const state = {me: null, config: null, draft: null, platforms: [], csrf: '', dirty: false, page: '', capToken: '', capReady: false, busy: false};
+  const state = {me: null, config: null, draft: null, platforms: [], csrf: '', dirty: false, page: '', capToken: '', capReady: false, capEnabled: true, bootstrapReady: false, busy: false};
   let noticeTimer, capScriptPromise, routeGeneration = 0;
   function node(tag, text, className) {
     const el = document.createElement(tag);
@@ -498,18 +498,27 @@
     root.append(box);
   }
   function security(root) {
-    const {form, box, bar} = settingsForm('登录防护', 'Cap 验证为强制要求，不提供绕过开关。仅信任您自行部署的 Cap 服务；密钥不会回显。');
+    const {form, box, bar} = settingsForm('登录防护', '默认启用 Cap 验证（强度 4）。关闭后仍需管理员密码，且保留登录限速与失败封禁。');
+    const disabled = field(box, 'security.cap_disabled', '关闭 Cap CAPTCHA（仅使用密码登录）', {type: 'checkbox', help: '警告：关闭后不再提供 CAPTCHA 防护。公网暴露的管理面板不建议关闭；请使用可信网络或访问控制保护。保存时必须验证当前管理员密码。'});
+    const capGrid = node('div', null, 'field-grid');
+    field(capGrid, 'security.cap_url', '自托管 Cap 服务地址', {type: 'url', required: true, help: '由本服务代理验证资源，浏览器不直接访问第三方 CDN。'});
+    field(capGrid, 'security.cap_site_key', 'Cap 站点密钥（Site Key）', {type: 'text', help: '首次启用可留空，由服务端使用本机管理密钥创建并验证站点。'});
+    field(capGrid, 'security.cap_secret', 'Cap 服务端密钥（Secret）', {type: 'secret'});
+    field(capGrid, 'security.cap_level', 'Cap 验证强度', {type: 'number', min: 1, max: 10, required: true, help: '默认 4；对应本地 Cap 服务配置，不是可绕过的前端参数。'});
+    const updateCapFields = () => {
+      capGrid.hidden = disabled.checked;
+      capGrid.querySelectorAll('input, button').forEach(input => { input.disabled = disabled.checked; });
+    };
+    disabled.addEventListener('change', updateCapFields);
+    updateCapFields();
+    box.append(capGrid);
     const grid = node('div', null, 'field-grid');
-    field(grid, 'security.cap_url', '自托管 Cap 服务地址', {type: 'url', required: true, help: '由本服务代理验证资源，浏览器不直接访问第三方 CDN。'});
-    field(grid, 'security.cap_site_key', 'Cap 站点密钥（Site Key）', {type: 'text', required: true});
-    field(grid, 'security.cap_secret', 'Cap 服务端密钥（Secret）', {type: 'secret'});
-    field(grid, 'security.cap_level', 'Cap 验证强度', {type: 'number', min: 1, max: 10, required: true, help: '默认 4；对应本地 Cap 服务配置，不是可绕过的前端参数。'});
     field(grid, 'security.failures', '触发封禁的失败次数', {type: 'number', min: 1, max: 100, required: true});
     field(grid, 'security.window_minutes', '失败计数窗口（分钟）', {type: 'number', min: 1, max: 1440, required: true});
     field(grid, 'security.ban_minutes', '自动封禁时长（分钟）', {type: 'number', min: 1, max: 43200, required: true});
     field(grid, 'security.session_hours', '登录会话有效期（小时）', {type: 'number', min: 1, max: 168, required: true});
     box.append(grid);
-    box.append(callout('修改 Cap 或可信代理前，请确认部署主机仍可本地管理。若登录服务不可用，只能通过本地配置 / CLI 修复；控制台不会降级免验证。'));
+    box.append(callout('重新启用前，请先启动 Cap 及其 Redis / Valkey，并确认部署主机上的管理密钥文件可用。服务端验证成功后才会保存；失败时保留原配置。修改 Cap 或可信代理前，请确认部署主机仍可本地管理。'));
     form.append(bar); root.append(form);
   }
   async function bans(root) {
@@ -642,8 +651,11 @@
     document.title = '安全登录 · 多平台解析';
     bootstrap().catch(error => { $('cap-status').textContent = error.message; });
   }
+  function loginReady() {
+    return state.bootstrapReady && (!state.capEnabled || (state.capReady && !!state.capToken));
+  }
   function updateLoginReady() {
-    $('login-submit').disabled = !state.capReady || !state.capToken;
+    $('login-submit').disabled = !loginReady();
   }
   async function loadWidget(url) {
     const resolved = new URL(url, location.origin);
@@ -665,13 +677,23 @@
   let bootstrapGeneration = 0;
   async function bootstrap() {
     const generation = ++bootstrapGeneration;
-    state.capReady = false; state.capToken = ''; updateLoginReady();
-    $('cap-container').replaceChildren(); $('cap-status').textContent = '正在连接本地 Cap 验证服务…';
+    state.bootstrapReady = false; state.capEnabled = true; state.capReady = false; state.capToken = ''; updateLoginReady();
+    $('cap-container').replaceChildren(); $('cap-container').hidden = true;
+    $('cap-status').className = 'hint'; $('cap-status').textContent = '正在读取登录安全配置…';
+    $('bootstrap-message').textContent = ''; $('cap-help').hidden = false;
     $('cap-retry').disabled = true;
     try {
       const setup = await api('/api/bootstrap');
       if (generation !== bootstrapGeneration || state.me) return;
       $('bootstrap-message').textContent = setup.setup_message || '';
+      state.capEnabled = setup.cap_enabled !== false;
+      $('cap-help').hidden = !state.capEnabled;
+      if (!state.capEnabled) {
+        state.bootstrapReady = true;
+        $('cap-status').className = 'callout';
+        $('cap-status').textContent = '警告：Cap CAPTCHA 已关闭。请输入管理员用户名和密码登录；公网暴露时建议启用 CAPTCHA 或限制访问来源。';
+        updateLoginReady(); return;
+      }
       if (!setup.cap_ready || !setup.cap_site_key || !setup.cap_endpoint || !setup.cap_widget_url) {
         $('cap-status').textContent = 'Cap 尚未就绪，登录已锁定。请在部署主机完成本地初始化后重新连接。';
         $('bootstrap-help').open = true; return;
@@ -694,22 +716,30 @@
         'required-label': '请先完成安全验证'
       };
       for (const [key, label] of Object.entries(labels)) widget.setAttribute('data-cap-i18n-' + key, label);
+      const currentWidget = () => generation === bootstrapGeneration && !state.me && state.capEnabled && widget.isConnected;
       widget.addEventListener('solve', event => {
+        if (!currentWidget()) return;
         state.capToken = typeof event.detail?.token === 'string' ? event.detail.token : '';
         $('cap-status').textContent = state.capToken ? '验证通过，请登录。' : '验证结果无效，请重新验证。'; updateLoginReady();
       });
       for (const eventName of ['error', 'reset', 'expire', 'expired']) widget.addEventListener(eventName, () => {
+        if (!currentWidget()) return;
         state.capToken = ''; $('cap-status').textContent = '验证已失效或失败，请重新完成验证；如无法恢复，请重新连接验证服务。'; updateLoginReady();
       });
-      $('cap-container').append(widget);
-      state.capReady = true; $('cap-status').textContent = `请完成本地 Cap 验证（强度 ${setup.cap_level}）。`; updateLoginReady();
+      $('cap-container').hidden = false; $('cap-container').append(widget);
+      state.bootstrapReady = true; state.capReady = true;
+      $('cap-status').textContent = `请完成本地 Cap 验证（强度 ${setup.cap_level}）。`; updateLoginReady();
     } catch (error) {
-      if (generation === bootstrapGeneration) { $('cap-status').textContent = error.message; $('bootstrap-help').open = true; }
+      if (generation === bootstrapGeneration && !state.me) {
+        state.bootstrapReady = false; state.capReady = false; state.capToken = ''; updateLoginReady();
+        $('cap-container').replaceChildren(); $('cap-container').hidden = true;
+        $('cap-status').textContent = error.message; $('bootstrap-help').open = true;
+      }
     } finally { if (generation === bootstrapGeneration) $('cap-retry').disabled = false; }
   }
   $('login-form').addEventListener('submit', async event => {
     event.preventDefault();
-    if (!state.capReady || !state.capToken || !$('login-form').reportValidity()) return;
+    if (!loginReady() || !$('login-form').reportValidity()) return;
     $('login-submit').disabled = true; $('login-error').textContent = '';
     try {
       await api('/api/login', {method: 'POST', body: {username: $('login-username').value.trim(), password: $('login-password').value, cap_token: state.capToken}});

@@ -5,7 +5,7 @@
 
 原生 Go 多平台链接解析工具。接收 NapCat 的 OneBot v11 反向 Universal WebSocket 消息，解析分享链接、AV/BV 编号和分享卡片，下载并发送图片、封面或视频。内置中文控制面板，支持平台策略、代理、登录保护和缓存管理。
 
-解析不依赖 Python、ParseHub 服务或 yt-dlp。FFmpeg/ffprobe 负责本地媒体处理；官方自托管 Cap 与 Valkey 负责登录验证码。当前发行镜像面向 **Linux amd64**，使用 Docker Engine 的 **host 网络**；不宣称支持 arm64 Cap 镜像或 Windows 原生 host 部署。
+解析不依赖 Python、ParseHub 服务或 yt-dlp。FFmpeg/ffprobe 负责本地媒体处理；默认方案使用官方自托管 Cap 与 Valkey 提供登录验证码，1.1.0 起也可明确关闭验证码，仅部署 Go 应用。当前发行镜像面向 **Linux amd64**，使用 Docker Engine 的 **host 网络**；不宣称支持 arm64 Cap 镜像或 Windows 原生 host 部署。
 
 ## 快速开始：使用 GitHub Release
 
@@ -15,13 +15,13 @@ Release 提供由 GitHub Actions 构建的应用与 Cap 镜像归档。此安装
 mkdir -p multiparse/certs
 cd multiparse
 
-RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.0.1
-for file in compose.yaml multi-platform-parse-v1.0.1-linux-amd64.tar.gz SHA256SUMS; do
+RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.1.0
+for file in compose.yaml compose.no-cap.yaml multi-platform-parse-v1.1.0-linux-amd64.tar.gz SHA256SUMS; do
   curl --fail --location --remote-name "$RELEASE/$file"
 done
 curl --fail --location --output .env.example "$RELEASE/default.env.example"
 sha256sum --check SHA256SUMS
-docker load --input multi-platform-parse-v1.0.1-linux-amd64.tar.gz
+docker load --input multi-platform-parse-v1.1.0-linux-amd64.tar.gz
 cp .env.example .env
 docker compose up -d --wait
 ```
@@ -39,7 +39,7 @@ docker compose exec app cat /data/initial-admin.txt
 - 首次登录必须修改密码，可以同时修改用户名；修改账号后撤销旧会话，需要重新登录。
 - 默认通过 `::` 同时监听全部 IPv4 / IPv6 接口，需系统支持 IPv6。面板为 `http://服务器IP:10492`；IPv6 地址使用方括号，例如 `http://[::1]:10492`。
 - 10492 被占用时依次尝试 10493、10494，直到找到可用端口。仅处理端口占用，不掩盖权限、地址或证书错误。最终地址以 `runtime.json` 为准。
-- Cap 默认插桩等级为 **4**。Cap 未就绪时禁止登录，不提供免验证码初始化入口。
+- 默认启用 Cap，插桩等级为 **4**；启用时 Cap 未就绪则禁止登录，不会因服务故障自动绕过验证。完全不使用验证码时，使用下方独立示例显式关闭。
 - **默认全接口开放，日志包含初始密码。** 公网部署请启用 HTTPS/WSS、设置防火墙或管理来源限制，并保护日志。修改密码不会擦除 Docker 或外部日志系统已经保存的内容。
 
 ### 默认 Docker Compose 示例
@@ -51,7 +51,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.0.1}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.0}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -68,6 +68,7 @@ services:
       LISTEN_ADDR: ${LISTEN_ADDR:-::}
       START_PORT: ${START_PORT:-10492}
       EXTERNAL_URL: ${EXTERNAL_URL:-}
+      CAP_ENABLED: ${CAP_ENABLED:-true}
       CAP_URL: http://127.0.0.1:${CAP_PORT:-30192}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
@@ -91,7 +92,7 @@ services:
     stop_grace_period: 45s
 
   cap:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.0.1}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.1.0}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -143,6 +144,75 @@ volumes:
   cap-data:
 ```
 
+### 不带 Cap / Valkey 的 Docker Compose 示例
+
+需要 **1.1.0 或更新版本**。以下配置只有 `app`，不会启动、拉取或访问 Cap/Valkey；使用用户名和密码登录。首次强制修改密码、会话与 CSRF 保护、失败计数及一小时封禁仍生效。关闭验证码会降低登录保护，不建议直接暴露到公网。
+
+保存为独立的 `compose.no-cap.yaml`，**与默认 Compose 二选一，不要合并加载**。仓库和 Release 也提供同名文件：
+
+```yaml
+name: multiparse
+
+services:
+  app:
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.0}
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    environment:
+      DATA_DIR: /data
+      CACHE_DIR: /media
+      CAP_ADMIN_KEY_FILE: /secrets/cap-admin.key
+      CAP_ENABLED: "false"
+      CAP_URL: http://127.0.0.1:30192
+      LISTEN_ADDR: ${LISTEN_ADDR:-::}
+      START_PORT: ${START_PORT:-10492}
+      EXTERNAL_URL: ${EXTERNAL_URL:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - app-data:/data
+      - media:/media
+      - secrets:/secrets
+      - ./certs:/certs:ro
+    tmpfs:
+      - /tmp:size=268435456,mode=1777
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/multiparse", "health", "--data", "/data"]
+      interval: 30s
+      timeout: 8s
+      start_period: 30s
+      retries: 3
+    stop_grace_period: 45s
+
+volumes:
+  app-data:
+  media:
+  secrets:
+```
+
+全新部署：
+
+```bash
+mkdir -p multiparse/certs
+cd multiparse
+curl --fail --location --output compose.no-cap.yaml \
+  https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.1.0/compose.no-cap.yaml
+docker compose -f compose.no-cap.yaml up -d --wait
+docker compose -f compose.no-cap.yaml logs app
+```
+
+`CAP_ENABLED: "false"` 只在首次初始化导入，存为 `security.cap_disabled=true`。`secrets` 卷只保留本地初始化密钥，以便以后恢复默认部署；保留该卷或 `CAP_URL` 配置不会启动或连接 Cap。
+
+**已有部署切换**：先升级至 1.1.0，在面板「登录安全」勾选「关闭 Cap CAPTCHA」并输入当前密码保存，再停止原 Compose（`docker compose down`，不要加 `-v`），使用相同项目名启动本例。仅删除 Cap 容器或修改环境变量，不会覆盖已有配置，也不会让启用验证码的旧实例自动改成密码登录。
+
+**重新启用验证码**：保留原数据卷，先启动默认三服务 Compose，确认 Cap/Valkey 可用，再在面板取消关闭选项并保存。后端先完成 Cap 初始化与等级校验才提交启用；失败时保留原配置，不假装已经启用保护。使用自定义内部端口时，保持面板 Cap 地址与部署一致。
+
 ### 可选添加项
 
 以下配置位于默认示例下方，按需要添加，不要求全部启用。
@@ -152,10 +222,11 @@ volumes:
 写入与 Compose 同目录的 `.env`：
 
 ```dotenv
-IMAGE_TAG=1.0.1
+IMAGE_TAG=1.1.0
 LISTEN_ADDR=::
 START_PORT=10492
 EXTERNAL_URL=
+CAP_ENABLED=true
 CAP_PORT=30192
 VALKEY_PORT=30292
 TZ=Asia/Shanghai
@@ -163,7 +234,7 @@ TZ=Asia/Shanghai
 
 仅允许本机 IPv4 时将 `LISTEN_ADDR` 改为 `127.0.0.1`；只监听 IPv4 全接口可设为 `0.0.0.0`。Cap/Valkey 内部端口冲突需修改各自变量，10492 的自动递增不会替它们换端口。
 
-`LISTEN_ADDR`、`START_PORT`、`EXTERNAL_URL` 仅在首次初始化业务配置时导入。已有数据卷请通过面板修改，升级不会覆盖已保存的监听设置。`IMAGE_TAG` 和辅助服务端口属于 Compose 配置，修改辅助端口后还需保持面板中的 Cap 服务地址一致。
+`LISTEN_ADDR`、`START_PORT`、`EXTERNAL_URL`、`CAP_ENABLED` 仅在首次初始化业务配置时导入。已有数据卷请通过面板修改，升级不会覆盖已保存的监听或验证码设置。默认 Compose 中仅设置 `CAP_ENABLED=false` 不会删除 Cap/Valkey 服务；需要单容器部署时，使用上方独立配置。`IMAGE_TAG` 和辅助服务端口属于 Compose 配置，修改辅助端口后还需保持面板中的 Cap 服务地址一致。
 
 **2. HTTPS / WSS 证书**
 
@@ -197,8 +268,8 @@ volumes:
 镜像地址：
 
 ```text
-ghcr.io/iwasakiyouko/multi-platform-parse:1.0.1
-ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.0.1
+ghcr.io/iwasakiyouko/multi-platform-parse:1.1.0
+ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.1.0
 ```
 
 本仓库的两个镜像已公开，可匿名拉取。若自行 fork 后新建 GHCR 包，默认可能为私有，公开源码不会自动公开包；仓库所有者可在 **Package settings → Change visibility → Public** 开放匿名拉取。私有包的授权用户需使用具有 `read:packages` 权限的令牌执行 `docker login ghcr.io`。不要把令牌写入 Compose、README 或提交记录。Release 的环境变量附件使用 `default.env.example` 名称，快速开始命令将其保存为本地 `.env.example` 后校验和使用。
@@ -226,7 +297,7 @@ go build -o multiparse ./cmd/multiparse
 docker compose -f compose.yaml -f compose.build.yaml config --quiet
 ```
 
-本地启动完整服务仍需正确配置自托管 Cap、Valkey 和 `CAP_ADMIN_KEY_FILE`；不能因调试而绕过验证码。不要让两个实例共用同一管理数据目录。
+默认完整服务需要正确配置自托管 Cap、Valkey 和 `CAP_ADMIN_KEY_FILE`；启用时不会因调试或故障跳过验证。明确选择无验证码模式时，使用上方单容器配置。不论哪种模式，都不要让两个实例共用同一管理数据目录。
 
 ### Go 调用原生解析器
 
@@ -342,7 +413,7 @@ console.log(tasks.find(task => task.id === id));
 
 媒体默认单文件 80 MiB、最长 1500 秒、最多 30 张图片、下载并发 2、转码并发 1、磁盘上限 2 GiB，可在面板调整。兼容媒体直接处理，必要时转为 H.264/AAC；HLS 在受限下载器中本地化，FFmpeg 不直接联网。
 
-默认同一来源 IP 在 15 分钟内密码错误五次后封禁一小时，重启保留。验证码错误单独限速，解出的令牌不可重放；Cap 等级 4 对应官方 `obfuscationLevel`，不是通用计算难度。官方插桩要求内联脚本、动态 JavaScript 和 WASM；CSP 因而保留相关执行能力，应用不把用户内容当作 HTML 或脚本执行。
+默认同一来源 IP 在 15 分钟内密码错误五次后封禁一小时，重启保留，无验证码模式也不例外。开启 Cap 时，验证码错误单独限速，解出的令牌不可重放；等级 4 对应官方 `obfuscationLevel`，不是通用计算难度。官方插桩要求内联脚本、动态 JavaScript 和 WASM；CSP 因而保留相关执行能力，应用不把用户内容当作 HTML 或脚本执行。关闭 Cap 时不加载验证码组件，但不应因此降低密码强度或扩大管理入口访问范围。
 
 ```bash
 # 本地解封，不删除业务数据
@@ -370,8 +441,8 @@ unset PASSWORD
 维护者发布示例：
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 版本标签须与 `cmd/multiparse/main.go` 中的应用版本同步；新发行版应同时更新仓库默认 `IMAGE_TAG` 和文档示例。不要覆盖已发布版本来代替新版本发布。
@@ -386,7 +457,7 @@ git push origin v1.0.1
 
 ```bash
 sha256sum --check DEBIAN-SOURCES-SHA256SUMS
-cat multi-platform-parse-v1.0.1-debian-sources.tar.gz.part* | tar -xz
+cat multi-platform-parse-v1.1.0-debian-sources.tar.gz.part* | tar -xz
 ```
 
 源码取自 Debian Snapshot 的准确源包版本，下载时核对大小、Snapshot 哈希和 Debian 描述文件的 SHA-256。Python 仅用于 CI/发布工具，不是解析服务或运行镜像的依赖。上述材料记录实际分发输入，不构成对镜像所有组件的法律保证。

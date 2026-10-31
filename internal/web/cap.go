@@ -84,8 +84,37 @@ func (s *Server) ProvisionCap(ctx context.Context, adminKey string) error {
 	s.changeMu.Lock()
 	defer s.changeMu.Unlock()
 	cfg := s.st.Config()
+	if cfg.Security.CapDisabled {
+		return nil
+	}
+	needsKeys := cfg.Security.CapSiteKey == "" || cfg.Security.CapSecret == ""
+	cfg, auth, err := s.capCredentials(ctx, cfg, adminKey)
+	if err != nil {
+		return err
+	}
+	if needsKeys {
+		if err = s.st.SaveConfig(cfg); err != nil {
+			return err
+		}
+	}
+	s.cap.mu.Lock()
+	wasReady := s.cap.ready
+	s.cap.ready = false
+	s.cap.mu.Unlock()
+	if err = s.configureCap(ctx, cfg, auth); err != nil {
+		if restoreErr := s.restoreCap(cfg, auth, wasReady); restoreErr != nil {
+			return fmt.Errorf("%w；Cap恢复验证失败，登录保持关闭：%v", err, restoreErr)
+		}
+		return err
+	}
+	s.markCapReady(cfg, auth, true)
+	return nil
+}
+
+// capCredentials prepares candidate credentials without publishing configuration.
+func (s *Server) capCredentials(ctx context.Context, cfg model.Config, adminKey string) (model.Config, string, error) {
 	if len(adminKey) < 12 {
-		return errors.New("Cap ADMIN_KEY至少12字符")
+		return cfg, "", errors.New("Cap ADMIN_KEY至少12字符")
 	}
 	var login struct {
 		Success bool   `json:"success"`
@@ -93,10 +122,10 @@ func (s *Server) ProvisionCap(ctx context.Context, adminKey string) error {
 		Hash    string `json:"hashed_token"`
 	}
 	if err := s.capJSON(ctx, cfg, "POST", "/auth/login", "", map[string]string{"admin_key": adminKey}, &login); err != nil {
-		return err
+		return cfg, "", err
 	}
 	if !login.Success || login.Token == "" || login.Hash == "" {
-		return errors.New("Cap管理员认证失败")
+		return cfg, "", errors.New("Cap管理员认证失败")
 	}
 	b, _ := json.Marshal(map[string]string{"token": login.Token, "hash": login.Hash})
 	auth := "Bearer " + base64.StdEncoding.EncodeToString(b)
@@ -106,29 +135,15 @@ func (s *Server) ProvisionCap(ctx context.Context, adminKey string) error {
 			Secret string `json:"secretKey"`
 		}
 		if err := s.capJSON(ctx, cfg, "POST", "/server/keys", auth, map[string]any{"name": "Multi-platform-Parse 登录验证", "instrumentation": true, "protocol": "sha256-pow"}, &key); err != nil {
-			return err
+			return cfg, "", err
 		}
 		if key.Site == "" || key.Secret == "" {
-			return errors.New("Cap创建站点失败")
+			return cfg, "", errors.New("Cap创建站点失败")
 		}
 		cfg.Security.CapSiteKey = key.Site
 		cfg.Security.CapSecret = key.Secret
-		if err := s.st.SaveConfig(cfg); err != nil {
-			return err
-		}
 	}
-	s.cap.mu.Lock()
-	wasReady := s.cap.ready
-	s.cap.ready = false
-	s.cap.mu.Unlock()
-	if err := s.configureCap(ctx, cfg, auth); err != nil {
-		if restoreErr := s.restoreCap(cfg, auth, wasReady); restoreErr != nil {
-			return fmt.Errorf("%w；Cap恢复验证失败，登录保持关闭：%v", err, restoreErr)
-		}
-		return err
-	}
-	s.markCapReady(cfg, auth, true)
-	return nil
+	return cfg, auth, nil
 }
 func (s *Server) configureCap(ctx context.Context, cfg model.Config, auth string) error {
 	var result struct {
@@ -185,12 +200,16 @@ func (s *Server) restoreCap(cfg model.Config, auth string, wasReady bool) error 
 func (s *Server) capConfigured(cfg model.Config) bool {
 	s.cap.mu.RLock()
 	defer s.cap.mu.RUnlock()
-	return s.cap.ready && s.cap.site == cfg.Security.CapSiteKey && s.cap.level == cfg.Security.CapLevel && s.cap.base == cfg.Security.CapURL && cfg.Security.CapSecret != ""
+	return !cfg.Security.CapDisabled && s.cap.ready && s.cap.site == cfg.Security.CapSiteKey && s.cap.level == cfg.Security.CapLevel && s.cap.base == cfg.Security.CapURL && cfg.Security.CapSecret != ""
 }
 func (s *Server) capAvailable(ctx context.Context, cfg model.Config) bool {
 	if !s.capConfigured(cfg) {
 		return false
 	}
+	return s.capHealthy(ctx, cfg)
+}
+
+func (s *Server) capHealthy(ctx context.Context, cfg model.Config) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, e := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(cfg.Security.CapURL, "/")+"/health", nil)
@@ -206,6 +225,9 @@ func (s *Server) capAvailable(ctx context.Context, cfg model.Config) bool {
 }
 func (s *Server) verifyCap(ctx context.Context, token string) error {
 	cfg := s.st.Config()
+	if cfg.Security.CapDisabled {
+		return nil
+	}
 	if !s.capConfigured(cfg) {
 		return errors.New("Cap尚未初始化，登录已关闭")
 	}
@@ -238,7 +260,13 @@ func (s *Server) captcha(w http.ResponseWriter, r *http.Request, ip string) {
 		capAssetHandler.ServeHTTP(w, r)
 		return
 	}
+	s.changeMu.RLock()
+	defer s.changeMu.RUnlock()
 	cfg := s.st.Config()
+	if cfg.Security.CapDisabled {
+		failure(w, 404, "Cap验证已关闭")
+		return
+	}
 	prefix := "/" + cfg.Security.CapSiteKey + "/"
 	if cfg.Security.CapSiteKey == "" || (path != prefix+"challenge" && path != prefix+"redeem") || r.Method != "POST" {
 		failure(w, 404, "未找到")

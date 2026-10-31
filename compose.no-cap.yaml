@@ -1,0 +1,43 @@
+name: multiparse
+
+services:
+  app:
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.0}
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    environment:
+      DATA_DIR: /data
+      CACHE_DIR: /media
+      CAP_ADMIN_KEY_FILE: /secrets/cap-admin.key
+      CAP_ENABLED: "false"
+      CAP_URL: http://127.0.0.1:30192
+      LISTEN_ADDR: ${LISTEN_ADDR:-::}
+      START_PORT: ${START_PORT:-10492}
+      EXTERNAL_URL: ${EXTERNAL_URL:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - app-data:/data
+      - media:/media
+      - secrets:/secrets
+      - ./certs:/certs:ro
+    tmpfs:
+      - /tmp:size=268435456,mode=1777
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/multiparse", "health", "--data", "/data"]
+      interval: 30s
+      timeout: 8s
+      start_period: 30s
+      retries: 3
+    stop_grace_period: 45s
+
+volumes:
+  app-data:
+  media:
+  secrets:

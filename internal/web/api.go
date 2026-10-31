@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -79,17 +80,31 @@ func (s *Server) applyConfig(r *http.Request, c model.Config) error {
 			discard()
 		}
 	}()
-	capChange := old.Security.CapLevel != c.Security.CapLevel || old.Security.CapSiteKey != c.Security.CapSiteKey || old.Security.CapURL != c.Security.CapURL
+	enablingCap := old.Security.CapDisabled && !c.Security.CapDisabled
+	capChange := !c.Security.CapDisabled && (enablingCap || old.Security.CapLevel != c.Security.CapLevel || old.Security.CapSiteKey != c.Security.CapSiteKey || old.Security.CapSecret != c.Security.CapSecret || old.Security.CapURL != c.Security.CapURL)
 	s.cap.mu.RLock()
 	auth, wasReady := s.cap.auth, s.cap.ready
 	s.cap.mu.RUnlock()
+	oldAuth := auth
 	rollbackCap := func(cause error) error {
-		if capChange {
-			if err := s.restoreCap(old, auth, wasReady); err != nil {
+		if capChange && !old.Security.CapDisabled {
+			if err := s.restoreCap(old, oldAuth, wasReady); err != nil {
 				return fmt.Errorf("%w；Cap恢复验证失败，登录保持关闭：%v", cause, err)
 			}
+		} else if enablingCap {
+			s.markCapReady(old, oldAuth, false)
 		}
 		return cause
+	}
+	if enablingCap {
+		key, err := os.ReadFile(s.hooks.CapAdminKeyFile)
+		if err != nil {
+			return errors.New("无法读取本机CAP_ADMIN_KEY_FILE，Cap保持关闭")
+		}
+		c, auth, err = s.capCredentials(r.Context(), c, strings.TrimSpace(string(key)))
+		if err != nil {
+			return err
+		}
 	}
 	if capChange {
 		if auth == "" {
@@ -101,6 +116,9 @@ func (s *Server) applyConfig(r *http.Request, c model.Config) error {
 		if err := s.configureCap(r.Context(), c, auth); err != nil {
 			return rollbackCap(err)
 		}
+		if enablingCap && !s.capHealthy(r.Context(), c) {
+			return rollbackCap(errors.New("Cap服务健康检查失败，Cap保持关闭"))
+		}
 	}
 	if err := s.st.SaveConfig(c); err != nil {
 		return rollbackCap(err)
@@ -109,7 +127,9 @@ func (s *Server) applyConfig(r *http.Request, c model.Config) error {
 		apply()
 	}
 	committed = true
-	if capChange {
+	if c.Security.CapDisabled {
+		s.markCapReady(c, auth, false)
+	} else if capChange {
 		s.markCapReady(c, auth, true)
 	}
 	if s.hooks.ConfigChanged != nil {

@@ -21,19 +21,20 @@ import (
 )
 
 type Hooks struct {
-	Status        func() any
-	PrepareConfig func(old, new model.Config) (apply func(), discard func(), err error)
-	ConfigChanged func(old, new model.Config)
-	ClearCache    func(all bool) error
-	TestProxy     func(context.Context, string) error
-	Submit        func(context.Context, string) (string, error)
+	Status          func() any
+	CapAdminKeyFile string
+	PrepareConfig   func(old, new model.Config) (apply func(), discard func(), err error)
+	ConfigChanged   func(old, new model.Config)
+	ClearCache      func(all bool) error
+	TestProxy       func(context.Context, string) error
+	Submit          func(context.Context, string) (string, error)
 }
 type Server struct {
 	st            *store.Store
 	hooks         Hooks
 	capClient     *http.Client
 	cap           capState
-	changeMu      sync.Mutex
+	changeMu      sync.RWMutex
 	passwordSlots chan struct{}
 }
 
@@ -264,12 +265,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			failure(w, 405, "方法不允许")
 			return
 		}
+		s.changeMu.RLock()
+		defer s.changeMu.RUnlock()
+		cfg = s.st.Config()
+		enabled := !cfg.Security.CapDisabled
 		ready := s.capAvailable(r.Context(), cfg)
 		message := ""
-		if !ready {
+		if enabled && !ready {
 			message = "Cap未就绪：请检查配置中的本机Cap服务、持久化Redis与CAP_ADMIN_KEY_FILE；初始化完成前禁止登录。验证资源已内置，无需CDN。"
 		}
-		reply(w, 200, map[string]any{"cap_ready": ready, "cap_site_key": cfg.Security.CapSiteKey, "cap_widget_url": "/captcha/assets/widget.js", "cap_endpoint": "/captcha/" + cfg.Security.CapSiteKey + "/", "cap_level": cfg.Security.CapLevel, "setup_required": !ready, "setup_message": message})
+		reply(w, 200, map[string]any{"cap_enabled": enabled, "cap_ready": ready, "cap_site_key": cfg.Security.CapSiteKey, "cap_widget_url": "/captcha/assets/widget.js", "cap_endpoint": "/captcha/" + cfg.Security.CapSiteKey + "/", "cap_level": cfg.Security.CapLevel, "setup_required": enabled && !ready, "setup_message": message})
 		return
 	case "/api/login":
 		if r.Method != "POST" {
@@ -328,6 +333,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, ip string) {
 		failure(w, 400, "用户名或密码过长")
 		return
 	}
+	// Keep CAPTCHA policy unchanged until the authenticated session is issued.
+	s.changeMu.RLock()
+	defer s.changeMu.RUnlock()
 	if err = s.verifyCap(r.Context(), body.CapToken); err != nil {
 		if !s.limit(w, "captcha-failure:"+ip, 10, time.Minute) {
 			return

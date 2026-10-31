@@ -35,7 +35,7 @@ import (
 	"multiparse/internal/web"
 )
 
-const version = "1.0.1"
+const version = "1.1.0"
 
 func main() {
 	if err := run(); err != nil {
@@ -145,6 +145,7 @@ func run() error {
 	var runtime *appruntime.Server
 	started := time.Now()
 	hooks := web.Hooks{
+		CapAdminKeyFile: keyFile,
 		Status: func() any {
 			state := runtime.State()
 			c := st.Config()
@@ -221,34 +222,43 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	var capWG sync.WaitGroup
-	capWG.Add(1)
-	go func() {
-		defer capWG.Done()
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
-		warned := false
-		for {
-			key, e := os.ReadFile(keyFile)
-			if e == nil {
-				attempt, cancel := context.WithTimeout(ctx, 20*time.Second)
-				e = admin.ProvisionCap(attempt, strings.TrimSpace(string(key)))
-				cancel()
+	if st.Config().Security.CapDisabled {
+		slog.Warn("Cap验证码已关闭；密码登录与失败封禁仍然生效，请限制管理入口")
+	} else {
+		capWG.Add(1)
+		go func() {
+			defer capWG.Done()
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+			warned := false
+			for {
+				if st.Config().Security.CapDisabled {
+					return
+				}
+				key, e := os.ReadFile(keyFile)
+				if e == nil {
+					attempt, cancel := context.WithTimeout(ctx, 20*time.Second)
+					e = admin.ProvisionCap(attempt, strings.TrimSpace(string(key)))
+					cancel()
+				}
+				if e == nil {
+					if cfg := st.Config(); !cfg.Security.CapDisabled {
+						slog.Info("Cap已就绪", "level", cfg.Security.CapLevel)
+					}
+					return
+				}
+				if !warned {
+					slog.Warn("Cap尚未就绪，登录保持关闭；检查Cap与Valkey服务以及密钥挂载")
+					warned = true
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
 			}
-			if e == nil {
-				slog.Info("Cap已就绪", "level", st.Config().Security.CapLevel)
-				return
-			}
-			if !warned {
-				slog.Warn("Cap尚未就绪，登录保持关闭；检查Cap与Valkey服务以及密钥挂载")
-				warned = true
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
+		}()
+	}
 	<-ctx.Done()
 	capWG.Wait()
 	shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -311,6 +321,13 @@ func bootstrap(st *store.Store, data string) error {
 	}
 	if v := os.Getenv("EXTERNAL_URL"); v != "" {
 		c.Server.ExternalURL = v
+	}
+	if v := os.Getenv("CAP_ENABLED"); v != "" {
+		enabled, e := strconv.ParseBool(v)
+		if e != nil {
+			return fmt.Errorf("CAP_ENABLED必须为有效布尔值：%w", e)
+		}
+		c.Security.CapDisabled = !enabled
 	}
 	if v := os.Getenv("CAP_URL"); v != "" {
 		c.Security.CapURL = v

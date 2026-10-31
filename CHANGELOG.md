@@ -2,6 +2,8 @@
 
 ## 2026-10-31
 
+- 1.1.0 新增可选密码登录模式：默认仍启用 Cap，首次可用 `CAP_ENABLED=false` 明确关闭，已有部署通过面板认证后修改；密码、会话、CSRF 和封禁仍生效。
+- 新增独立 `compose.no-cap.yaml` 及 README 完整示例，仅部署 Go 应用，无需 Cap/Valkey；启用验证码前验证 Cap 配置，失败保留原策略。
 - 明确使用可移植的 `default.env.example` Release 附件名，安装时保存为本地 `.env.example` 后校验；文档注明两个 GHCR 镜像已公开并支持匿名拉取。
 - 发布修订版本 1.0.1：源码归档使用 Debian 描述文件的准确文件名，处理 Snapshot 历史别名，并排除不同架构来源的 Debian Ports 重名文件；保留校验失败时停止发布的行为。
 - 重写面向开发者的 README，提供默认 Compose、可选配置、Go/API 使用例和上游引用。

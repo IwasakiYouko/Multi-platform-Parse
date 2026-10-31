@@ -2,7 +2,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.0.1}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.0}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -19,6 +19,7 @@ services:
       LISTEN_ADDR: ${LISTEN_ADDR:-::}
       START_PORT: ${START_PORT:-10492}
       EXTERNAL_URL: ${EXTERNAL_URL:-}
+      CAP_ENABLED: ${CAP_ENABLED:-true}
       CAP_URL: http://127.0.0.1:${CAP_PORT:-30192}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
@@ -42,7 +43,7 @@ services:
     stop_grace_period: 45s
 
   cap:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.0.1}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.1.0}
     network_mode: host
     restart: unless-stopped
     init: true

@@ -35,6 +35,7 @@ type OneBotConfig struct {
 	SelfIDs []string `json:"self_ids"`
 }
 type SecurityConfig struct {
+	CapDisabled   bool   `json:"cap_disabled"`
 	CapURL        string `json:"cap_url"`
 	CapSiteKey    string `json:"cap_site_key"`
 	CapSecret     string `json:"cap_secret"`

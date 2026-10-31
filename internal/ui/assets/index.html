@@ -22,17 +22,19 @@
         <input id="login-username" name="username" autocomplete="username" required maxlength="128">
         <label for="login-password">密码</label>
         <input id="login-password" name="password" type="password" autocomplete="current-password" required>
-        <div id="cap-container" class="cap-container" aria-label="登录安全验证"></div>
-        <p id="cap-status" class="hint" role="status">正在连接本地 Cap 验证服务…</p>
-        <button id="cap-retry" class="secondary" type="button">重新连接验证服务</button>
+        <div id="cap-container" class="cap-container" aria-label="登录安全验证" hidden></div>
+        <p id="cap-status" class="hint" role="status">正在读取登录安全配置…</p>
+        <button id="cap-retry" class="secondary" type="button" disabled>刷新登录安全配置</button>
         <button id="login-submit" type="submit" disabled>安全登录</button>
       </form>
       <details id="bootstrap-help">
         <summary>首次部署或无法登录？</summary>
         <p>初始用户名为 <code>admin</code>，随机密码保存在服务数据目录的 <code>initial-admin.txt</code> 中。请在部署主机本地读取；首次登录必须修改密码，也可以修改用户名。</p>
+        <div id="cap-help">
         <p>Cap 未就绪时禁止登录。请在部署主机启动自托管 Cap 及其 Redis，将 Cap 的 <code>ADMIN_KEY</code> 安全写入权限为 <code>0600</code> 的本地文件，并为本服务设置 <code>CAP_ADMIN_KEY_FILE</code> 指向该文件。服务会使用官方管理 API 初始化站点；无公开免验证初始化入口。</p>
         <p>Cap 需配置有效的 <code>REDIS_URL</code>。默认 Cap 地址为 <code>http://127.0.0.1:3000</code>；服务地址必须可从解析服务进程访问。验证组件与 WebAssembly 资源已内置于解析服务，无需启用 Cap 资源服务器，也不依赖 CDN。部署完成后重新连接验证服务。</p>
         <p>不要将 Cap 管理密钥、站点服务端密钥或管理员密码发给他人。若已有站点配置，可由部署管理员在本地恢复配置后重启服务。</p>
+        </div>
         <p id="bootstrap-message"></p>
       </details>
       <p id="login-error" class="error" role="alert"></p>
