@@ -1,0 +1,18 @@
+Bundled browser assets; no runtime CDN fetch is required.
+
+widget.js: @cap.js/widget 0.1.56, official package cap.min.js.
+https://registry.npmjs.org/@cap.js/widget/0.1.56
+https://cdn.jsdelivr.net/npm/@cap.js/widget@0.1.56/cap.min.js
+License: cap-widget.LICENSE (Apache-2.0).
+
+cap_wasm.js, cap_wasm_bg.wasm, hashwx.wasm: @cap.js/wasm 0.0.8.
+https://registry.npmjs.org/@cap.js/wasm/0.0.8
+https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.8/browser/cap_wasm.min.js
+https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.8/browser/cap_wasm_bg.wasm
+https://cdn.jsdelivr.net/npm/@cap.js/wasm@0.0.8/browser/hashwx.wasm
+Official package gitHead: 3e7be32b04443755d541bb558f40b57b592d6940.
+License: cap-wasm.LICENSE, from official source at that commit (Apache-2.0).
+
+pako_inflate.min.js: pako 2.1.0.
+https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako_inflate.min.js
+License: pako.LICENSE (MIT).

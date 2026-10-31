@@ -1,0 +1,10 @@
+# Use with compose.yaml when building the checked-out source instead of release images.
+services:
+  app:
+    build:
+      context: .
+      target: app
+  cap:
+    build:
+      context: .
+      target: cap

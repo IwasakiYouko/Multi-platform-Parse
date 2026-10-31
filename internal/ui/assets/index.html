@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#155e75">
+  <title>多平台解析 · 控制台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a href="#main" class="skip-link">跳到主要内容</a>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <section id="login-view" class="login-view" aria-labelledby="login-title">
+    <div class="login-card">
+      <p class="eyebrow">MULTI-PLATFORM PARSE</p>
+      <h1 id="login-title">多平台解析控制台</h1>
+      <p class="muted">本地管理 · 统一策略 · 安全连接</p>
+      <form id="login-form">
+        <label for="login-username">用户名</label>
+        <input id="login-username" name="username" autocomplete="username" required maxlength="128">
+        <label for="login-password">密码</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        <div id="cap-container" class="cap-container" aria-label="登录安全验证"></div>
+        <p id="cap-status" class="hint" role="status">正在连接本地 Cap 验证服务…</p>
+        <button id="cap-retry" class="secondary" type="button">重新连接验证服务</button>
+        <button id="login-submit" type="submit" disabled>安全登录</button>
+      </form>
+      <details id="bootstrap-help">
+        <summary>首次部署或无法登录？</summary>
+        <p>初始用户名为 <code>admin</code>，随机密码保存在服务数据目录的 <code>initial-admin.txt</code> 中。请在部署主机本地读取；首次登录必须修改密码，也可以修改用户名。</p>
+        <p>Cap 未就绪时禁止登录。请在部署主机启动自托管 Cap 及其 Redis，将 Cap 的 <code>ADMIN_KEY</code> 安全写入权限为 <code>0600</code> 的本地文件，并为本服务设置 <code>CAP_ADMIN_KEY_FILE</code> 指向该文件。服务会使用官方管理 API 初始化站点；无公开免验证初始化入口。</p>
+        <p>Cap 需配置有效的 <code>REDIS_URL</code>。默认 Cap 地址为 <code>http://127.0.0.1:3000</code>；服务地址必须可从解析服务进程访问。验证组件与 WebAssembly 资源已内置于解析服务，无需启用 Cap 资源服务器，也不依赖 CDN。部署完成后重新连接验证服务。</p>
+        <p>不要将 Cap 管理密钥、站点服务端密钥或管理员密码发给他人。若已有站点配置，可由部署管理员在本地恢复配置后重启服务。</p>
+        <p id="bootstrap-message"></p>
+      </details>
+      <p id="login-error" class="error" role="alert"></p>
+    </div>
+  </section>
+  <div id="app-view" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">M</span><span>多平台解析<small>CONTROL PANEL</small></span></a>
+      <nav id="navigation" aria-label="主要导航"></nav>
+      <div class="sidebar-footer"><span id="current-user"></span><button id="logout" class="secondary" type="button">退出登录</button></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><div><p class="eyebrow">管理控制台</p><h1 id="page-title">概览</h1></div><div class="top-actions"><span id="dirty-state" class="muted"></span><button id="theme-toggle" class="secondary" type="button" aria-label="切换深色或浅色主题">切换主题</button></div></header>
+      <main id="main" tabindex="-1"><div id="page-content"></div></main>
+      <footer class="page-footer">配置由服务端原子保存。密钥仅用于当前请求，不存入浏览器持久存储。</footer>
+    </div>
+  </div>
+  <dialog id="confirm-dialog" aria-labelledby="dialog-title"><form method="dialog" id="dialog-form"><h2 id="dialog-title"></h2><p id="dialog-message"></p><label id="dialog-password-label" for="dialog-password">当前密码</label><input id="dialog-password" type="password" autocomplete="current-password"><div class="dialog-actions"><button value="cancel" class="secondary" formnovalidate>取消</button><button id="dialog-confirm" value="confirm">确认</button></div></form></dialog>
+  <noscript><p class="error">控制台需要启用 JavaScript。所有脚本均由本地服务提供，不使用 CDN。</p></noscript>
+</body>
+</html>

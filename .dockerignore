@@ -1,0 +1,15 @@
+.git
+.env
+data
+media
+certs
+*.db
+*.db-shm
+*.db-wal
+*.key
+*.pem
+initial-admin.txt
+runtime.json
+multiparse
+release
+__pycache__

@@ -1,0 +1,175 @@
+name: CI and release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Race tests, vet, compile, and Compose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # Official action refs resolved through the GitHub git/ref API; keep SHA pins when updating.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - name: Install media test dependency
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Check dependency license collection
+        run: |
+          go mod download all
+          go run ./scripts/licenses -out "$RUNNER_TEMP/dependency-licenses"
+      - name: Test Debian source distribution tooling
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Race tests
+        run: go test -race -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Compile
+        run: go build -trimpath -o "$RUNNER_TEMP/multiparse" ./cmd/multiparse
+      - name: Validate deployment and source build override
+        run: |
+          docker compose -f compose.yaml config --quiet
+          docker compose -f compose.yaml -f compose.build.yaml config --quiet
+
+  images:
+    name: Build and publish linux/amd64 images
+    needs: checks
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Select immutable and release tags
+        id: tags
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Release tags must be vMAJOR.MINOR.PATCH' >&2; exit 1; }
+          version="${REF_NAME#v}"
+          printf 'sha-%s\n%s\nlatest\n' "$GITHUB_SHA" "$version" > "$RUNNER_TEMP/image-tags"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Build both targets before publishing
+        run: |
+          set -euo pipefail
+          for target in app cap; do
+            image=ghcr.io/iwasakiyouko/multi-platform-parse
+            if [[ "$target" == cap ]]; then image="${image}-cap"; fi
+            tags=()
+            while IFS= read -r tag; do tags+=(--tag "$image:$tag"); done < "$RUNNER_TEMP/image-tags"
+            docker build --platform linux/amd64 --target "$target" --build-arg "VCS_REF=$GITHUB_SHA" "${tags[@]}" .
+          done
+      - name: Bundle exact Debian corresponding sources
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.tags.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          container=$(docker create "ghcr.io/iwasakiyouko/multi-platform-parse:$VERSION")
+          trap 'docker rm -f "$container" > /dev/null' EXIT
+          docker cp "$container:/usr/local/share/doc/multiparse/debian-packages.tsv" release/debian-packages.tsv
+          docker rm "$container"
+          trap - EXIT
+          python3 scripts/debian_sources.py --inventory release/debian-packages.tsv --output release --release "v$VERSION"
+      - name: Push both images
+        run: |
+          set -euo pipefail
+          for image in ghcr.io/iwasakiyouko/multi-platform-parse ghcr.io/iwasakiyouko/multi-platform-parse-cap; do
+            while IFS= read -r tag; do docker push "$image:$tag"; done < "$RUNNER_TEMP/image-tags"
+          done
+      - name: Prepare Docker-loadable public release assets
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.tags.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          archive="multi-platform-parse-v${VERSION}-linux-amd64.tar.gz"
+          docker save "ghcr.io/iwasakiyouko/multi-platform-parse:$VERSION" "ghcr.io/iwasakiyouko/multi-platform-parse-cap:$VERSION" | gzip -1 > "release/$archive"
+          cp compose.yaml .env.example release/
+          # Match the downloaded Compose defaults to this release, without a YAML dependency.
+          VERSION="$VERSION" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          version = os.environ['VERSION']
+          path = Path('release/compose.yaml')
+          path.write_text(path.read_text().replace('${IMAGE_TAG:-1.0.0}', '${IMAGE_TAG:-' + version + '}'))
+          path = Path('release/.env.example')
+          path.write_text(path.read_text().replace('IMAGE_TAG=1.0.0', 'IMAGE_TAG=' + version))
+          PY
+          (cd release && sha256sum "$archive" compose.yaml .env.example > SHA256SUMS)
+          (cd release && sha256sum debian-packages.tsv debian-source-manifest.json multi-platform-parse-v*-debian-sources.tar.gz.part* > DEBIAN-SOURCES-SHA256SUMS)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.ref_type == 'tag'
+        with:
+          name: public-release
+          path: release/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Clear registry credentials
+        if: always()
+        run: docker logout ghcr.io
+
+  release:
+    name: Publish public GitHub Release
+    needs: images
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: public-release
+          path: release
+      - name: Publish release and deployment assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          printf 'Load images with: `docker load -i multi-platform-parse-%s-linux-amd64.tar.gz`.\n\n' "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes"
+          cat >> "$RUNNER_TEMP/release-notes" <<'NOTES'
+          Linux amd64 images for the native Go application and its official Cap-based launcher.
+
+          GHCR packages can initially be private. Public installation does not require GHCR access for these two images: download the gzip archive, SHA256SUMS, compose.yaml, and .env.example from this Release. Verify with `sha256sum -c SHA256SUMS`, then load the archive with the command above. Both versioned image tags match the supplied Compose defaults.
+
+          Copy `.env.example` to `.env`, create the `certs` directory, and run `docker compose up -d --no-build`. The pinned third-party Valkey image still requires a registry pull. Host networking requires a Linux deployment. See the repository README for configuration and first-run credentials. No arm64 Cap image is provided.
+
+          Debian corresponding sources: download every same-release `*-debian-sources.tar.gz.part*` asset, `debian-source-manifest.json`, `debian-packages.tsv`, and `DEBIAN-SOURCES-SHA256SUMS`. Run `sha256sum -c DEBIAN-SOURCES-SHA256SUMS`, then concatenate the ordered parts into `tar -xz` to extract. The inventory records exact source package versions for every installed Debian package; the manifest records immutable snapshot URLs and verified hashes. These materials document redistribution inputs, not a legal guarantee for every component in the images.
+          NOTES
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/* release/.env.example --clobber
+          else
+            gh release create "$RELEASE_TAG" release/* release/.env.example --verify-tag --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes"
+          fi

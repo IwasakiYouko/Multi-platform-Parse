@@ -1,0 +1,13 @@
+/data/
+/media/
+/certs/
+/.env
+/multiparse
+*.db
+*.db-shm
+*.db-wal
+*.key
+initial-admin.txt
+runtime.json
+/release/
+__pycache__/
