@@ -509,6 +509,32 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 	}
 	cfg := s.st.Config()
 	r := e.Result
+	check := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.allowed(target, e.Platform); err != nil {
+			return err
+		}
+		return policy.MediaCheck(s.st.Config(), r, e.Files)
+	}
+	var initial []model.Segment
+	images := make(map[string]bool)
+	addImage := func(path string) {
+		key := filepath.Clean(path)
+		if !images[key] {
+			images[key] = true
+			initial = append(initial, model.Segment{Type: "image", Data: map[string]any{"file": s.mediaLocation(e, path, target)}})
+		}
+	}
+	for _, f := range e.Files {
+		if f.Kind == "image" && !(f.Size > cfg.Media.MaxBytes && cfg.Media.OversizeMode == "file") {
+			addImage(f.Path)
+		}
+		if cfg.Media.ShowCover && f.Kind == "video" && f.ThumbPath != "" {
+			addImage(f.ThumbPath)
+		}
+	}
 	if cfg.Media.ShowInfo {
 		var b strings.Builder
 		if r.Title != "" {
@@ -521,26 +547,25 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 			fmt.Fprintln(&b, truncate(r.Content, 1800))
 		}
 		fmt.Fprintf(&b, "链接：%s", r.SourceURL)
-		if err := s.sender.Send(ctx, target, []model.Segment{{Type: "text", Data: map[string]any{"text": b.String()}}}); err != nil {
+		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": b.String()}})
+	}
+	if !cfg.Media.ShowInfo && len(e.Files) == 0 {
+		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": r.SourceURL}})
+	}
+	if len(initial) != 0 {
+		if err := check(); err != nil {
 			return err
+		}
+		if err := s.sender.Send(ctx, target, initial); err != nil {
+			return fmt.Errorf("发送图文消息失败: %w", err)
 		}
 	}
+	video := 0
 	for _, f := range e.Files {
-		if err := ctx.Err(); err != nil {
-			return err
+		if f.Kind == "image" && !(f.Size > cfg.Media.MaxBytes && cfg.Media.OversizeMode == "file") {
+			continue
 		}
-		if err := s.allowed(target, e.Platform); err != nil {
-			return err
-		}
-		if err := policy.MediaCheck(s.st.Config(), r, []model.Artifact{f}); err != nil {
-			return err
-		}
-		if cfg.Media.ShowCover && f.Kind == "video" && f.ThumbPath != "" {
-			if err := s.sender.Send(ctx, target, []model.Segment{{Type: "image", Data: map[string]any{"file": s.mediaLocation(e, f.ThumbPath, target)}}}); err != nil {
-				return err
-			}
-		}
-		if err := s.allowed(target, e.Platform); err != nil {
+		if err := check(); err != nil {
 			return err
 		}
 		location := s.mediaLocation(e, f.Path, target)
@@ -561,15 +586,18 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 			return errors.New("无法发送未知媒体类型")
 		}
 		data := map[string]any{"file": location}
-		if kind == "video" && f.ThumbPath != "" {
-			data["thumb"] = s.mediaLocation(e, f.ThumbPath, target)
+		if kind == "video" {
+			video++
+			if f.ThumbPath != "" {
+				data["thumb"] = s.mediaLocation(e, f.ThumbPath, target)
+			}
 		}
 		if err := s.sender.Send(ctx, target, []model.Segment{{Type: kind, Data: data}}); err != nil {
+			if kind == "video" {
+				return fmt.Errorf("发送视频 %d 失败: %w", video, err)
+			}
 			return err
 		}
-	}
-	if !cfg.Media.ShowInfo && len(e.Files) == 0 {
-		return s.sender.Send(ctx, target, []model.Segment{{Type: "text", Data: map[string]any{"text": r.SourceURL}}})
 	}
 	return nil
 }

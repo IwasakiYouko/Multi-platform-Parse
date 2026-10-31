@@ -30,15 +30,26 @@ func TestMajorBilibiliPageSelectionAndDASH(t *testing.T) {
 		body := `{"code":0,"data":{}}`
 		switch r.URL.Path {
 		case "/x/web-interface/view":
+			if r.URL.Query().Get("bvid") != "BV1xx411c7mD" || r.URL.Query().Has("aid") || r.URL.Query().Has("avid") {
+				t.Errorf("wrong BV view identity: %s", r.URL.RawQuery)
+				return majorTestResponse(r, `{"code":-400,"message":"请求错误"}`), nil
+			}
 			body = `{"code":0,"data":{"title":"Multipart","desc":"Description","pic":"https://i0.hdslb.com/cover.jpg","owner":{"name":"Uploader"},"pages":[{"page":1,"cid":11,"part":"First","duration":10},{"page":2,"cid":22,"part":"Second","duration":20}]}}`
 		case "/x/frontend/finger/spi":
 			body = `{"code":0,"data":{"b_3":"anonymous3","b_4":"anonymous4"}}`
 		case "/x/player/playurl":
+			if r.URL.Query().Get("bvid") != "BV1xx411c7mD" || r.URL.Query().Has("aid") || r.URL.Query().Has("avid") {
+				t.Errorf("wrong BV playback identity: %s", r.URL.RawQuery)
+				return majorTestResponse(r, `{"code":-400,"message":"请求错误"}`), nil
+			}
 			requestedCID = r.URL.Query().Get("cid")
 			if !strings.Contains(r.Header.Get("Cookie"), "SESSDATA=test") {
 				t.Error("session cookie lost")
 			}
 			body = `{"code":0,"data":{"dash":{"duration":20,"video":[{"baseUrl":"https://cdn.bilivideo.com/video.m4s","codecs":"avc1.640028","bandwidth":100,"width":1920,"height":1080}],"audio":[{"baseUrl":"https://cdn.bilivideo.com/audio.m4s","codecs":"mp4a.40.2","bandwidth":128000}]}}}`
+		default:
+			t.Errorf("unexpected request: %s", r.URL)
+			return majorTestResponse(r, `{"code":-404}`), nil
 		}
 		return majorTestResponse(r, body), nil
 	})}

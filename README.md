@@ -15,13 +15,13 @@ Release 提供由 GitHub Actions 构建的应用与 Cap 镜像归档。此安装
 mkdir -p multiparse/certs
 cd multiparse
 
-RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.1.0
-for file in compose.yaml compose.no-cap.yaml multi-platform-parse-v1.1.0-linux-amd64.tar.gz SHA256SUMS; do
+RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.1.1
+for file in compose.yaml compose.no-cap.yaml multi-platform-parse-v1.1.1-linux-amd64.tar.gz SHA256SUMS; do
   curl --fail --location --remote-name "$RELEASE/$file"
 done
 curl --fail --location --output .env.example "$RELEASE/default.env.example"
 sha256sum --check SHA256SUMS
-docker load --input multi-platform-parse-v1.1.0-linux-amd64.tar.gz
+docker load --input multi-platform-parse-v1.1.1-linux-amd64.tar.gz
 cp .env.example .env
 docker compose up -d --wait
 ```
@@ -51,7 +51,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.1}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -92,7 +92,7 @@ services:
     stop_grace_period: 45s
 
   cap:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.1.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.1.1}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -155,7 +155,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.1}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -202,14 +202,14 @@ volumes:
 mkdir -p multiparse/certs
 cd multiparse
 curl --fail --location --output compose.no-cap.yaml \
-  https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.1.0/compose.no-cap.yaml
+  https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.1.1/compose.no-cap.yaml
 docker compose -f compose.no-cap.yaml up -d --wait
 docker compose -f compose.no-cap.yaml logs app
 ```
 
 `CAP_ENABLED: "false"` 只在首次初始化导入，存为 `security.cap_disabled=true`。`secrets` 卷只保留本地初始化密钥，以便以后恢复默认部署；保留该卷或 `CAP_URL` 配置不会启动或连接 Cap。
 
-**已有部署切换**：先升级至 1.1.0，在面板「登录安全」勾选「关闭 Cap CAPTCHA」并输入当前密码保存，再停止原 Compose（`docker compose down`，不要加 `-v`），使用相同项目名启动本例。仅删除 Cap 容器或修改环境变量，不会覆盖已有配置，也不会让启用验证码的旧实例自动改成密码登录。
+**已有部署切换**：先升级至 1.1.1，在面板「登录安全」勾选「关闭 Cap CAPTCHA」并输入当前密码保存，再停止原 Compose（`docker compose down`，不要加 `-v`），使用相同项目名启动本例。仅删除 Cap 容器或修改环境变量，不会覆盖已有配置，也不会让启用验证码的旧实例自动改成密码登录。
 
 **重新启用验证码**：保留原数据卷，先启动默认三服务 Compose，确认 Cap/Valkey 可用，再在面板取消关闭选项并保存。后端先完成 Cap 初始化与等级校验才提交启用；失败时保留原配置，不假装已经启用保护。使用自定义内部端口时，保持面板 Cap 地址与部署一致。
 
@@ -222,7 +222,7 @@ docker compose -f compose.no-cap.yaml logs app
 写入与 Compose 同目录的 `.env`：
 
 ```dotenv
-IMAGE_TAG=1.1.0
+IMAGE_TAG=1.1.1
 LISTEN_ADDR=::
 START_PORT=10492
 EXTERNAL_URL=
@@ -268,8 +268,8 @@ volumes:
 镜像地址：
 
 ```text
-ghcr.io/iwasakiyouko/multi-platform-parse:1.1.0
-ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.1.0
+ghcr.io/iwasakiyouko/multi-platform-parse:1.1.1
+ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.1.1
 ```
 
 本仓库的两个镜像已公开，可匿名拉取。若自行 fork 后新建 GHCR 包，默认可能为私有，公开源码不会自动公开包；仓库所有者可在 **Package settings → Change visibility → Public** 开放匿名拉取。私有包的授权用户需使用具有 `read:packages` 权限的令牌执行 `docker login ghcr.io`。不要把令牌写入 Compose、README 或提交记录。Release 的环境变量附件使用 `default.env.example` 名称，快速开始命令将其保存为本地 `.env.example` 后校验和使用。
@@ -391,6 +391,10 @@ console.log(tasks.find(task => task.id === id));
 
 支持文字、CQ、JSON/XML 分享卡片、share 消息段及混合消息。没有来源链接的普通上传视频不能反向恢复原平台地址。默认同一机器人、同一群或私聊会话在成功发送后冷却 30 秒，可设为 0 关闭；重复处理中请求被抑制，失败不占用成功冷却。进程重启会取消中断任务，不自动重发可能已经送达的消息；Token 轮换使旧连接失效。
 
+解析结果先发送一条普通图文消息：可用图片或封面使用 `image` 消息段，原有解析文案使用 `text` 消息段，放在同一个 `message` 数组中。收到 OneBot 成功回执后，再逐个发送独立的视频消息，不使用合并转发或并发发送。没有图片时先发文案，没有视频时只发图文；关闭文案与封面且没有其他图片时直接发视频，不发送空消息。展示开关及视频原生缩略图行为保持不变。
+
+图文发送失败会停止后续视频；视频发送失败会报告对应步骤，不自动重发已经成功的图文。HTTP 模式的图片、封面、视频与缩略图均沿用带签名的媒体地址；文件模式仍要求 NapCat 可以访问共享媒体文件。
+
 ## 平台、策略与代理
 
 当前注册 24 个原生适配器：Bilibili、抖音、TikTok、小红书、微博、快手、Twitter/X、Instagram、YouTube、Facebook、Threads、贴吧、微信公众号、微信视频号、酷安、皮皮虾、最右、小黑盒、Snapchat、知乎、豆瓣、Bangumi、今日头条、Medium。准确的平台 ID、域名和内容类型见 `GET /api/platforms` 与 `internal/model/model.go`。
@@ -441,8 +445,8 @@ unset PASSWORD
 维护者发布示例：
 
 ```bash
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.1.1
+git push origin v1.1.1
 ```
 
 版本标签须与 `cmd/multiparse/main.go` 中的应用版本同步；新发行版应同时更新仓库默认 `IMAGE_TAG` 和文档示例。不要覆盖已发布版本来代替新版本发布。
@@ -457,7 +461,7 @@ git push origin v1.1.0
 
 ```bash
 sha256sum --check DEBIAN-SOURCES-SHA256SUMS
-cat multi-platform-parse-v1.1.0-debian-sources.tar.gz.part* | tar -xz
+cat multi-platform-parse-v1.1.1-debian-sources.tar.gz.part* | tar -xz
 ```
 
 源码取自 Debian Snapshot 的准确源包版本，下载时核对大小、Snapshot 哈希和 Debian 描述文件的 SHA-256。Python 仅用于 CI/发布工具，不是解析服务或运行镜像的依赖。上述材料记录实际分发输入，不构成对镜像所有组件的法律保证。

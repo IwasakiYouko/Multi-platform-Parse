@@ -164,12 +164,20 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 			}
 		}
 	}
-	query.Set("cid", cid)
-	query.Set("qn", "80")
-	query.Set("fnval", "4048")
-	query.Set("fnver", "0")
-	query.Set("fourk", "1")
-	play, err := majorBiliAPI(ctx, c, "https://api.bilibili.com/x/player/playurl?"+query.Encode(), cookie, raw)
+	playQuery := url.Values{}
+	if bv := Text(view["bvid"]); majorBiliBV.FindString(bv) == bv && bv != "" {
+		playQuery.Set("bvid", bv)
+	} else if av := query.Get("aid"); av != "" {
+		playQuery.Set("avid", av)
+	} else {
+		playQuery.Set("bvid", query.Get("bvid"))
+	}
+	playQuery.Set("cid", cid)
+	playQuery.Set("qn", "80")
+	playQuery.Set("fnval", "4048")
+	playQuery.Set("fnver", "0")
+	playQuery.Set("fourk", "1")
+	play, err := majorBiliAPI(ctx, c, "https://api.bilibili.com/x/player/playurl?"+playQuery.Encode(), cookie, raw)
 	if err != nil {
 		return nil, err
 	}
