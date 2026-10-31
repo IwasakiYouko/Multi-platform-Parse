@@ -2,6 +2,7 @@
 
 ## 2026-10-31
 
+- 明确使用可移植的 `default.env.example` Release 附件名，安装时保存为本地 `.env.example` 后校验；文档注明两个 GHCR 镜像已公开并支持匿名拉取。
 - 发布修订版本 1.0.1：源码归档使用 Debian 描述文件的准确文件名，处理 Snapshot 历史别名，并排除不同架构来源的 Debian Ports 重名文件；保留校验失败时停止发布的行为。
 - 重写面向开发者的 README，提供默认 Compose、可选配置、Go/API 使用例和上游引用。
 - 将镜像部署与源码构建配置分离；新增 GitHub CI，以及检查通过后构建双镜像、发布 GHCR 和 GitHub Release 的版本标签工作流。

@@ -16,9 +16,10 @@ mkdir -p multiparse/certs
 cd multiparse
 
 RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.0.1
-for file in compose.yaml .env.example multi-platform-parse-v1.0.1-linux-amd64.tar.gz SHA256SUMS; do
+for file in compose.yaml multi-platform-parse-v1.0.1-linux-amd64.tar.gz SHA256SUMS; do
   curl --fail --location --remote-name "$RELEASE/$file"
 done
+curl --fail --location --output .env.example "$RELEASE/default.env.example"
 sha256sum --check SHA256SUMS
 docker load --input multi-platform-parse-v1.0.1-linux-amd64.tar.gz
 cp .env.example .env
@@ -200,7 +201,7 @@ ghcr.io/iwasakiyouko/multi-platform-parse:1.0.1
 ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.0.1
 ```
 
-GitHub 个人账号新建的 GHCR 包默认可能为私有，公开源码不会自动公开包。仓库所有者可在两个包的 **Package settings → Change visibility → Public** 中开放匿名拉取；未开放时，授权用户需使用具有 `read:packages` 权限的令牌执行 `docker login ghcr.io`。不要把令牌写入 Compose、README 或提交记录。无需 GHCR 登录的替代方案是上方的公共 Release 镜像归档。
+本仓库的两个镜像已公开，可匿名拉取。若自行 fork 后新建 GHCR 包，默认可能为私有，公开源码不会自动公开包；仓库所有者可在 **Package settings → Change visibility → Public** 开放匿名拉取。私有包的授权用户需使用具有 `read:packages` 权限的令牌执行 `docker login ghcr.io`。不要把令牌写入 Compose、README 或提交记录。Release 的环境变量附件使用 `default.env.example` 名称，快速开始命令将其保存为本地 `.env.example` 后校验和使用。
 
 ## 开发者使用例
 

@@ -159,18 +159,19 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          mv release/.env.example release/default.env.example
           printf 'Load images with: `docker load -i multi-platform-parse-%s-linux-amd64.tar.gz`.\n\n' "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes"
           cat >> "$RUNNER_TEMP/release-notes" <<'NOTES'
           Linux amd64 images for the native Go application and its official Cap-based launcher.
 
-          GHCR packages can initially be private. Public installation does not require GHCR access for these two images: download the gzip archive, SHA256SUMS, compose.yaml, and .env.example from this Release. Verify with `sha256sum -c SHA256SUMS`, then load the archive with the command above. Both versioned image tags match the supplied Compose defaults.
+          GHCR packages can initially be private. Public installation does not require GHCR access for these two images: download the gzip archive, SHA256SUMS, compose.yaml, and default.env.example from this Release. Save default.env.example locally as .env.example before verifying with `sha256sum -c SHA256SUMS`, then load the archive with the command above. Both versioned image tags match the supplied Compose defaults.
 
           Copy `.env.example` to `.env`, create the `certs` directory, and run `docker compose up -d --no-build`. The pinned third-party Valkey image still requires a registry pull. Host networking requires a Linux deployment. See the repository README for configuration and first-run credentials. No arm64 Cap image is provided.
 
           Debian corresponding sources: download every same-release `*-debian-sources.tar.gz.part*` asset, `debian-source-manifest.json`, `debian-packages.tsv`, and `DEBIAN-SOURCES-SHA256SUMS`. Run `sha256sum -c DEBIAN-SOURCES-SHA256SUMS`, then concatenate the ordered parts into `tar -xz` to extract. The inventory records exact source package versions for every installed Debian package; the manifest records immutable snapshot URLs and verified hashes. These materials document redistribution inputs, not a legal guarantee for every component in the images.
           NOTES
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release/* release/.env.example --clobber
+            gh release upload "$RELEASE_TAG" release/* --clobber
           else
-            gh release create "$RELEASE_TAG" release/* release/.env.example --verify-tag --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes"
+            gh release create "$RELEASE_TAG" release/* --verify-tag --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes"
           fi
