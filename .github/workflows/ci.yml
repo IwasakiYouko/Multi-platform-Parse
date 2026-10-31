@@ -116,12 +116,13 @@ jobs:
           # Match the downloaded Compose defaults to this release, without a YAML dependency.
           VERSION="$VERSION" python3 - <<'PY'
           import os
+          import re
           from pathlib import Path
           version = os.environ['VERSION']
           path = Path('release/compose.yaml')
-          path.write_text(path.read_text().replace('${IMAGE_TAG:-1.0.0}', '${IMAGE_TAG:-' + version + '}'))
+          path.write_text(re.sub(r'\$\{IMAGE_TAG:-[^}]+\}', '${IMAGE_TAG:-' + version + '}', path.read_text()))
           path = Path('release/.env.example')
-          path.write_text(path.read_text().replace('IMAGE_TAG=1.0.0', 'IMAGE_TAG=' + version))
+          path.write_text(re.sub(r'^IMAGE_TAG=.*$', 'IMAGE_TAG=' + version, path.read_text(), flags=re.MULTILINE))
           PY
           (cd release && sha256sum "$archive" compose.yaml .env.example > SHA256SUMS)
           (cd release && sha256sum debian-packages.tsv debian-source-manifest.json multi-platform-parse-v*-debian-sources.tar.gz.part* > DEBIAN-SOURCES-SHA256SUMS)

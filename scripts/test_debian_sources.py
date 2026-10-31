@@ -11,7 +11,7 @@ import debian_sources as sources
 
 
 class SourceBundleTests(unittest.TestCase):
-    def test_exact_sources_and_manifest_are_in_split_archive(self):
+    def test_descriptor_names_survive_snapshot_version_aliases(self):
         payload = b"corresponding upstream source\n"
         name = "example_1.orig.tar.gz"
         descriptor = ("Format: 3.0 (quilt)\nChecksums-Sha256:\n "
@@ -21,9 +21,17 @@ class SourceBundleTests(unittest.TestCase):
         by_hash = {hashlib.sha1(data).hexdigest(): data for data in files.values()}
         metadata = {
             "result": [{"hash": digest} for digest in by_hash],
-            "fileinfo": {hashlib.sha1(data).hexdigest(): [{"name": filename, "size": len(data)}]
+            "fileinfo": {hashlib.sha1(data).hexdigest(): [{"name": filename, "size": len(data), "archive_name": "debian"}]
                          for filename, data in files.items()},
         }
+        metadata["fileinfo"][hashlib.sha1(payload).hexdigest()].insert(
+            0, {"name": "example_0.orig.tar.gz", "size": len(payload), "archive_name": "debian"})
+        ports_descriptor = descriptor + b"Build-Architecture: hurd-amd64\n"
+        ports_hash = hashlib.sha1(ports_descriptor).hexdigest()
+        by_hash[ports_hash] = ports_descriptor
+        metadata["result"].append({"hash": ports_hash})
+        metadata["fileinfo"][ports_hash] = [{
+            "name": "example_1-1.dsc", "size": len(ports_descriptor), "archive_name": "debian-ports"}]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             inventory = root / "debian-packages.tsv"
@@ -36,6 +44,7 @@ class SourceBundleTests(unittest.TestCase):
             parts = sorted(output.glob("*.part*"))
             with tarfile.open(fileobj=io.BytesIO(b"".join(path.read_bytes() for path in parts)), mode="r:gz") as archive:
                 self.assertEqual(archive.extractfile("sources/example/1-1/" + name).read(), payload)
+                self.assertEqual(archive.extractfile("sources/example/1-1/example_1-1.dsc").read(), descriptor)
                 self.assertIn("debian-packages.tsv", archive.getnames())
             manifest = json.loads((output / "debian-source-manifest.json").read_text())
             self.assertEqual(manifest["packages"][0]["version"], "1-1")

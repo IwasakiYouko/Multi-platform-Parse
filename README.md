@@ -15,12 +15,12 @@ Release 提供由 GitHub Actions 构建的应用与 Cap 镜像归档。此安装
 mkdir -p multiparse/certs
 cd multiparse
 
-RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.0.0
-for file in compose.yaml .env.example multi-platform-parse-v1.0.0-linux-amd64.tar.gz SHA256SUMS; do
+RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.0.1
+for file in compose.yaml .env.example multi-platform-parse-v1.0.1-linux-amd64.tar.gz SHA256SUMS; do
   curl --fail --location --remote-name "$RELEASE/$file"
 done
 sha256sum --check SHA256SUMS
-docker load --input multi-platform-parse-v1.0.0-linux-amd64.tar.gz
+docker load --input multi-platform-parse-v1.0.1-linux-amd64.tar.gz
 cp .env.example .env
 docker compose up -d --wait
 ```
@@ -50,7 +50,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.0.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.0.1}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -90,7 +90,7 @@ services:
     stop_grace_period: 45s
 
   cap:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.0.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.0.1}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -151,7 +151,7 @@ volumes:
 写入与 Compose 同目录的 `.env`：
 
 ```dotenv
-IMAGE_TAG=1.0.0
+IMAGE_TAG=1.0.1
 LISTEN_ADDR=::
 START_PORT=10492
 EXTERNAL_URL=
@@ -196,8 +196,8 @@ volumes:
 镜像地址：
 
 ```text
-ghcr.io/iwasakiyouko/multi-platform-parse:1.0.0
-ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.0.0
+ghcr.io/iwasakiyouko/multi-platform-parse:1.0.1
+ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.0.1
 ```
 
 GitHub 个人账号新建的 GHCR 包默认可能为私有，公开源码不会自动公开包。仓库所有者可在两个包的 **Package settings → Change visibility → Public** 中开放匿名拉取；未开放时，授权用户需使用具有 `read:packages` 权限的令牌执行 `docker login ghcr.io`。不要把令牌写入 Compose、README 或提交记录。无需 GHCR 登录的替代方案是上方的公共 Release 镜像归档。
@@ -369,8 +369,8 @@ unset PASSWORD
 维护者发布示例：
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 版本标签须与 `cmd/multiparse/main.go` 中的应用版本同步；新发行版应同时更新仓库默认 `IMAGE_TAG` 和文档示例。不要覆盖已发布版本来代替新版本发布。
@@ -385,7 +385,7 @@ git push origin v1.0.0
 
 ```bash
 sha256sum --check DEBIAN-SOURCES-SHA256SUMS
-cat multi-platform-parse-v1.0.0-debian-sources.tar.gz.part* | tar -xz
+cat multi-platform-parse-v1.0.1-debian-sources.tar.gz.part* | tar -xz
 ```
 
 源码取自 Debian Snapshot 的准确源包版本，下载时核对大小、Snapshot 哈希和 Debian 描述文件的 SHA-256。Python 仅用于 CI/发布工具，不是解析服务或运行镜像的依赖。上述材料记录实际分发输入，不构成对镜像所有组件的法律保证。

@@ -65,14 +65,10 @@ def download(file_hash, destination, expected_size):
             "sha256": sha256.hexdigest(), "size": size}
 
 
-def verify_dsc(directory, files):
-    descriptors = list(directory.glob("*.dsc"))
-    if len(descriptors) != 1:
-        raise ValueError(f"Expected one Debian source descriptor in {directory}")
-    by_name = {entry["name"]: entry for entry in files}
+def dsc_checksums(descriptor):
+    checksums = {}
     in_checksums = False
-    verified = 0
-    for line in descriptors[0].read_text().splitlines():
+    for line in descriptor.read_text().splitlines():
         if line == "Checksums-Sha256:":
             in_checksums = True
             continue
@@ -80,12 +76,24 @@ def verify_dsc(directory, files):
             break
         if in_checksums:
             digest, size, name = line.split()
-            entry = by_name[safe_name(name)]
-            if digest != entry["sha256"] or int(size) != entry["size"]:
-                raise ValueError(f"Debian descriptor SHA-256 mismatch for {name}")
-            verified += 1
-    if not verified:
-        raise ValueError(f"Missing Checksums-Sha256 in {descriptors[0]}")
+            name = safe_name(name)
+            if name in checksums or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError(f"Invalid or duplicate source checksum for {name}")
+            checksums[name] = (digest, int(size))
+    if not checksums:
+        raise ValueError(f"Missing Checksums-Sha256 in {descriptor}")
+    return checksums
+
+
+def verify_dsc(directory, files):
+    descriptors = list(directory.glob("*.dsc"))
+    if len(descriptors) != 1:
+        raise ValueError(f"Expected one Debian source descriptor in {directory}")
+    by_name = {entry["name"]: entry for entry in files}
+    for name, (digest, size) in dsc_checksums(descriptors[0]).items():
+        entry = by_name[name]
+        if digest != entry["sha256"] or size != entry["size"]:
+            raise ValueError(f"Debian descriptor SHA-256 mismatch for {name}")
 
 
 class SplitWriter:
@@ -133,6 +141,7 @@ def bundle(inventory, destination, release):
     destination.mkdir(parents=True, exist_ok=True)
     manifest = {"release": release, "inventory": "debian-packages.tsv",
                 "api_documentation": "https://salsa.debian.org/snapshot-team/snapshot/raw/master/API",
+                "source_archives": ["debian", "debian-security"],
                 "packages": []}
     prefix = destination / f"multi-platform-parse-{release}-debian-sources.tar.gz"
     writer = SplitWriter(prefix)
@@ -147,16 +156,29 @@ def bundle(inventory, destination, release):
                     metadata = api(query)
                     directory = root / source / version
                     directory.mkdir(parents=True)
-                    files = []
-                    if not metadata["result"]:
-                        raise ValueError(f"No source files for {source} {version}")
+                    by_name = {}
                     for entry in metadata["result"]:
                         file_hash = entry["hash"]
-                        info = metadata["fileinfo"][file_hash][0]
-                        path = directory / safe_name(info["name"])
-                        if path.exists():
-                            raise ValueError(f"Duplicate source filename: {path}")
-                        files.append(download(file_hash, path, int(info["size"])))
+                        for info in metadata["fileinfo"][file_hash]:
+                            if info["archive_name"] not in manifest["source_archives"]:
+                                continue
+                            name = safe_name(info["name"])
+                            by_name.setdefault(name, set()).add((file_hash, int(info["size"])))
+                    descriptors = [name for name in by_name if name.endswith(".dsc")]
+                    if len(descriptors) != 1:
+                        raise ValueError(f"Expected one source descriptor for {source} {version}")
+
+                    def fetch(name):
+                        candidates = by_name.get(name, set())
+                        if len(candidates) != 1:
+                            raise ValueError(f"Missing or ambiguous source filename: {name}")
+                        file_hash, size = next(iter(candidates))
+                        return download(file_hash, directory / name, size)
+
+                    descriptor = descriptors[0]
+                    files = [fetch(descriptor)]
+                    for name in dsc_checksums(directory / descriptor):
+                        files.append(fetch(name))
                     verify_dsc(directory, files)
                     manifest["packages"].append({"name": source, "version": version,
                                                   "api": BASE + query, "files": files})
