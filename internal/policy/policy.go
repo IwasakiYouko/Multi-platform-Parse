@@ -60,7 +60,7 @@ func Message(c model.Config, platform, reason string) string {
 func MediaCheck(c model.Config, r model.ParseResult, files []model.Artifact) error {
 	images := 0
 	for _, m := range r.Media {
-		if m.Kind == "image" {
+		if m.Kind == "image" || m.Kind == "gif" || m.Kind == "livephoto" {
 			images++
 		}
 		if m.Duration > float64(c.Media.MaxDurationSeconds) {
@@ -74,7 +74,7 @@ func MediaCheck(c model.Config, r model.ParseResult, files []model.Artifact) err
 		if f.Duration > float64(c.Media.MaxDurationSeconds) {
 			return fmt.Errorf("缓存视频超过允许时长")
 		}
-		if f.Size > c.Media.MaxBytes && c.Media.OversizeMode != "file" {
+		if (f.Size > c.Media.MaxBytes || f.VideoSize > c.Media.MaxBytes) && c.Media.OversizeMode != "file" {
 			return fmt.Errorf("媒体文件超过发送大小限制")
 		}
 	}

@@ -97,29 +97,11 @@ func overseasAdd(r *model.ParseResult, m model.Media) {
 	r.Media = append(r.Media, m)
 }
 func overseasFinish(r *model.ParseResult) (*model.ParseResult, error) {
-	if len(r.Media) == 0 {
-		if strings.TrimSpace(r.Content) == "" {
-			return nil, fmt.Errorf("%s: no accessible post body or playable media; the post may be private, removed, login-required, or blocked in this region", r.Platform)
-		}
-		r.Type = "article"
-	} else {
-		r.Type = r.Media[0].Kind
-		for _, m := range r.Media {
-			if m.Kind != r.Type {
-				r.Type = "multimedia"
-				break
-			}
-		}
+	if len(r.Media) == 0 && strings.TrimSpace(r.Content) == "" && strings.TrimSpace(r.MarkdownContent) == "" && strings.TrimSpace(r.Title) == "" {
+		return nil, fmt.Errorf("%s: no accessible post body or playable media; the post may be private, removed, login-required, or blocked in this region", r.Platform)
 	}
-	if r.Title == "" {
-		r.Title = r.Content
-	}
-	if r.Title == "" {
-		r.Title = r.Platform + " post"
-	}
-	titleRunes := []rune(r.Title)
-	if len(titleRunes) > 140 {
-		r.Title = string(titleRunes[:140])
+	if r.Type == "" {
+		referenceResultType(r)
 	}
 	return r, nil
 }

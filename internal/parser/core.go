@@ -61,7 +61,14 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 		return nil, err
 	}
 	defer client.CloseIdleConnections()
-	r, err := fn(ctx, client, rawURL, policy.Cookie)
+	protected := p.ID == "bilibili" || p.ID == "douyin"
+	attempts := 1
+	if !protected { attempts = 3 }
+	var r *model.ParseResult
+	for range attempts {
+		r, err = fn(ctx, client, rawURL, policy.Cookie)
+		if err == nil || ctx.Err() != nil || referenceUnavailable(err) { break }
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +98,14 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 		if e != nil || (u.Scheme != "http" && u.Scheme != "https") {
 			continue
 		}
+		if m.Kind == "livephoto" {
+			video, parseErr := url.Parse(m.VideoURL)
+			if parseErr != nil || video.Hostname() == "" || (video.Scheme != "http" && video.Scheme != "https") || video.User != nil {
+				return nil, errors.New("实况图片缺少有效配对视频地址")
+			}
+		}
 		k := m.Kind + ":" + m.URL
+		if m.Kind == "livephoto" { k += ":" + m.VideoURL }
 		if seen[k] {
 			continue
 		}
@@ -102,10 +116,12 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 		media = append(media, m)
 	}
 	r.Media = media
-	if strings.TrimSpace(r.Content) == "" && len(r.Media) == 0 {
+	readable := strings.TrimSpace(r.Content) != ""
+	if !protected { readable = readable || strings.TrimSpace(r.Title) != "" || strings.TrimSpace(r.MarkdownContent) != "" }
+	if !readable && len(r.Media) == 0 {
 		return nil, errors.New("未找到公开正文或媒体，可能需要Cookie或已被删除")
 	}
-	if (r.Type == "video" || r.Type == "image" || r.Type == "multimedia") && len(r.Media) == 0 {
+	if (r.Type == "video" || r.Type == "image" || r.Type == "multimedia") && len(r.Media) == 0 && (protected || !readable) {
 		return nil, errors.New("未取得媒体，可能需要登录或受到风控限制")
 	}
 	return r, nil

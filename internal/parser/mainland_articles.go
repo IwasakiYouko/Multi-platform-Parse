@@ -15,6 +15,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"golang.org/x/net/html/atom"
 	"multiparse/internal/model"
+	"multiparse/internal/netx"
 )
 
 func init() {
@@ -26,7 +27,8 @@ func init() {
 }
 
 func mainlandWeixin(ctx context.Context, c *http.Client, raw, cookie string) (*model.ParseResult, error) {
-	b, final, err := Get(ctx, c, raw, Headers(cookie, raw))
+	ctx = netx.WithoutCookies(ctx)
+	b, final, err := Get(ctx, c, raw, Headers("", raw))
 	if err != nil {
 		return nil, err
 	}
@@ -34,16 +36,23 @@ func mainlandWeixin(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	if err != nil {
 		return nil, err
 	}
-	r := mainlandResult("weixin", final)
+	r := mainlandResult("weixin", articleWeixinCanonical(final))
 	r.Type = "article"
 	r.Title = strings.TrimSpace(page.Find("#activity-name").Text())
 	r.Author = strings.TrimSpace(page.Find("#js_name").Text())
 	source := ""
 	state, stateErr := mainlandLiteralState(b, "cgiDataNew")
+	if stateErr != nil && strings.Contains(string(b), "cgiDataNew") {
+		return nil, stateErr
+	}
 	if stateErr == nil {
-		r.Title = mainlandFirst(Path(state, "title"), r.Title)
+		r.Title = Text(Path(state, "title"))
 		source = Text(Path(state, "content_noencode"))
-		switch kind := int(Number(Path(state, "item_show_type"))); kind {
+		kind, kindErr := strconv.Atoi(Text(Path(state, "item_show_type")))
+		if kindErr != nil {
+			return nil, fmt.Errorf("不支持的微信公众号内容类型: %v", Path(state, "item_show_type"))
+		}
+		switch kind {
 		case 0:
 		case 8:
 			r.Content = mainlandText(source)
@@ -51,15 +60,17 @@ func mainlandWeixin(ctx context.Context, c *http.Client, raw, cookie string) (*m
 			for _, p := range Array(Path(state, "picture_page_info_list")) {
 				mainlandAdd(r, "image", mainlandFirst(Path(p, "watermark_info", "cdn_url"), Path(p, "cdn_url")), Obj(p))
 			}
-			return mainlandFinish(r, false)
+			return articleFinish(r, false)
 		case 10:
+			r.Title = ""
 			r.Content = mainlandText(Text(Path(state, "text_page_info", "content_noencode")))
-			return mainlandFinish(r, false)
+			r.Type = "image"
+			return articleFinish(r, false)
 		default:
-			return nil, fmt.Errorf("微信公众号内容类型 %d 尚未提供可读取正文", kind)
+			return nil, fmt.Errorf("不支持的微信公众号内容类型: %d", kind)
 		}
 	}
-	if source == "" {
+	if source == "" && stateErr != nil {
 		source, _ = page.Find("#js_content").First().Html()
 	}
 	body, err := mainlandDoc(source)
@@ -89,7 +100,7 @@ func mainlandWeixin(ctx context.Context, c *http.Client, raw, cookie string) (*m
 		}
 		var playback any
 		endpoint := "https://mp.weixin.qq.com/mp/videoplayer?vid=" + url.QueryEscape(vid) + "&action=get_mp_video_play_url&preview=0"
-		if e := JSON(ctx, c, endpoint, Headers(cookie, final), &playback); e != nil {
+		if e := JSON(ctx, c, endpoint, Headers("", final), &playback); e != nil {
 			videoErr = fmt.Errorf("微信公众号内嵌视频 %s 读取失败: %w", vid, e)
 			return false
 		}
@@ -123,95 +134,143 @@ func mainlandWeixin(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	if err = mainlandBody(r, resolved); err != nil {
 		return nil, err
 	}
-	return mainlandFinish(r, expected > 0)
+	referenceSetHTML(r, resolved)
+	return articleFinish(r, expected > 0)
 }
 
 func mainlandCoolapk(ctx context.Context, c *http.Client, raw, cookie string) (*model.ParseResult, error) {
-	b, final, e := Get(ctx, c, raw, Headers(cookie, "https://www.coolapk.com/"))
-	if e != nil {
-		return nil, e
+	ctx = netx.WithoutCookies(ctx)
+	b, final, err := Get(ctx, c, raw, Headers("", "https://www.coolapk.com/"))
+	if err != nil {
+		return nil, err
 	}
-	d, e := mainlandDoc(string(b))
-	if e != nil {
-		return nil, e
+	d, err := mainlandDoc(string(b))
+	if err != nil {
+		return nil, err
 	}
-	r := mainlandResult("coolapk", final)
+	r := mainlandResult("coolapk", articleCanonical(final))
 	r.Title = strings.TrimSpace(d.Find(".message-title").First().Text())
 	r.Author = strings.TrimSpace(d.Find(".user-name,.feed-user-name").First().Text())
-	body := d.Find(".feed-article-message").First()
-	if body.Length() > 0 {
-		r.Type = "article"
-		s, _ := body.Html()
-		_ = mainlandBody(r, s)
-	} else {
-		body = d.Find(".feed-message").First()
+	if r.Title != "" {
+		body := d.Find(".feed-article-message").First()
 		if body.Length() == 0 {
-			return nil, fmt.Errorf("酷安未返回动态正文；分享链接必须保留 shareKey 或 s 参数，受限动态需要有效 Cookie")
+			u, _ := url.Parse(raw)
+			if u != nil && (u.Query().Has("shareKey") || u.Query().Has("s")) {
+				return nil, fmt.Errorf("酷安获取内容失败")
+			}
+			return nil, fmt.Errorf("酷安获取内容失败, 分享时请保留 shareKey 或 s 参数")
 		}
-		s, _ := body.Html()
-		_ = mainlandBody(r, s)
-		d.Find(".message-image-group img").Each(func(_ int, s *goquery.Selection) { u, _ := s.Attr("src"); mainlandAdd(r, "image", u, nil) })
+		source, _ := body.Html()
+		referenceSetHTML(r, source)
+		r.Type = "article"
+		body.Find("img.message-image").Each(func(_ int, image *goquery.Selection) {
+			src, _ := image.Attr("src")
+			articleAddCoolapkImage(r, src)
+		})
+	} else {
+		body := d.Find(".feed-message").First()
+		if r.Content = strings.TrimSpace(body.Text()); r.Content == "" {
+			return nil, fmt.Errorf("酷安获取内容失败, 分享时请保留 shareKey 或 s 参数")
+		}
+		r.Content = regexp.MustCompile(` ?#[^#]+# ?`).ReplaceAllStringFunc(r.Content, func(tag string) string {
+			return " " + strings.TrimSuffix(strings.TrimSpace(tag), "#") + " "
+		})
+		r.Type = "image"
+		d.Find(".message-image-group").First().Find("img").Each(func(_ int, image *goquery.Selection) {
+			src, _ := image.Attr("src")
+			articleAddCoolapkImage(r, src)
+		})
+		for _, media := range r.Media {
+			if media.Kind == "gif" {
+				r.Type = "multimedia"
+				break
+			}
+		}
 	}
-	expected := d.Find(".feed-video,.video-player,video").Length() > 0
-	d.Find(".feed-video video,.feed-video source,video").Each(func(_ int, s *goquery.Selection) { u, _ := s.Attr("src"); mainlandAdd(r, "video", u, nil) })
-	return mainlandFinish(r, expected)
+	return articleFinish(r, false)
 }
 
 func mainlandDouban(ctx context.Context, c *http.Client, raw, cookie string) (*model.ParseResult, error) {
-	r := mainlandResult("douban", raw)
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if u.Hostname() == "douc.cc" || strings.HasPrefix(u.Path, "/doubanapp/dispatch") {
+		_, raw, err = Get(netx.WithoutCookies(ctx), c, raw, Headers("", "https://m.douban.com/"))
+		if err != nil {
+			return nil, err
+		}
+		u, err = url.Parse(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if u.Hostname() != "douban.com" && u.Hostname() != "www.douban.com" && u.Hostname() != "m.douban.com" {
+		return nil, fmt.Errorf("豆瓣分享链接未跳转到受支持的豆瓣页面")
+	}
+	r := mainlandResult("douban", articleCanonical(raw))
 	h := Headers(cookie, "https://m.douban.com/")
 	h["User-Agent"] = mainlandMobileUA
-	match := regexp.MustCompile(`douban\.com/(?:group/)?topic/(\d+)`).FindStringSubmatch(raw)
+	match := regexp.MustCompile(`^/(?:group/)?topic/(\d+)(?:/|$)`).FindStringSubmatch(u.Path)
 	if len(match) > 0 {
 		var v any
-		if e := JSON(ctx, c, "https://m.douban.com/rexxar/api/v2/group/topic/"+match[1], h, &v); e != nil {
-			return nil, e
+		endpoint := "https://m.douban.com/rexxar/api/v2/group/topic/" + match[1]
+		if err := articleDoubanJSON(ctx, c, endpoint, h, &v); err != nil {
+			return nil, err
 		}
-		if Text(Path(v, "title")) == "" {
-			return nil, fmt.Errorf("豆瓣话题不可访问: %s", mainlandFirst(Path(v, "localized_message"), Path(v, "msg")))
+		if _, ok := v.(map[string]any); !ok {
+			return nil, fmt.Errorf("豆瓣话题接口未返回有效对象")
+		}
+		if message := mainlandFirst(Path(v, "localized_message"), Path(v, "msg")); message != "" && Path(v, "content") == nil {
+			return nil, fmt.Errorf("豆瓣解析失败: %s", message)
 		}
 		r.Title = Text(Path(v, "title"))
 		r.Author = Text(Path(v, "author", "name"))
-		_ = mainlandBody(r, Text(Path(v, "content")))
-		for _, p := range Array(Path(v, "photos")) {
-			image := Path(p, "image")
-			anim := Text(Path(image, "is_animated")) == "true"
-			video := Obj(Path(image, "video"))
-			if anim && Text(video["url"]) != "" {
-				mainlandAdd(r, "video", Text(video["url"]), video)
-			} else {
-				large := Obj(Path(image, "large"))
-				if Text(large["url"]) == "" {
-					large = Obj(Path(image, "normal"))
-				}
-				mainlandAdd(r, "image", Text(large["url"]), large)
-			}
-		}
-		vi := Obj(Path(v, "video_info"))
-		if len(vi) > 0 {
-			duration := float64(0)
-			for _, p := range strings.Split(Text(vi["duration"]), ":") {
-				duration = duration*60 + Number(p)
-			}
-			mainlandAdd(r, "video", Text(vi["video_url"]), map[string]any{"thumbnail": vi["cover_url"], "duration": duration, "width": vi["video_width"], "height": vi["video_height"]})
-		}
-		for i := range r.Media {
-			r.Media[i].Headers = Headers("", "https://www.douban.com/")
-		}
+		referenceSetHTML(r, Text(Path(v, "content")))
 		r.Type = "article"
-		return mainlandFinish(r, len(vi) > 0)
+		gallery := mainlandFirst(Path(v, "image_layout"), "horizontal") == "horizontal"
+		if gallery {
+			r.Type = "image"
+			r.MarkdownContent = ""
+		} else if video := Obj(Path(v, "video_info")); Text(video["video_url"]) != "" {
+			mainlandAdd(r, "video", Text(video["video_url"]), map[string]any{
+				"thumbnail": video["cover_url"], "duration": articleDoubanDuration(video["duration"]),
+				"width": video["video_width"], "height": video["video_height"],
+			})
+		}
+		for _, photo := range Array(Path(v, "photos")) {
+			image := Obj(Path(photo, "image"))
+			normal := Obj(image["normal"])
+			video := Obj(image["video"])
+			if Text(image["is_animated"]) == "true" && Text(video["url"]) != "" {
+				mainlandAdd(r, "gif", Text(video["url"]), map[string]any{
+					"width": video["width"], "height": video["height"], "thumbnail": normal["url"],
+				})
+				continue
+			}
+			large := Obj(image["large"])
+			if len(large) == 0 {
+				large = normal
+			}
+			mainlandAdd(r, "image", Text(large["url"]), map[string]any{
+				"width": large["width"], "height": large["height"], "thumbnail": normal["url"],
+			})
+		}
+		articleDoubanHeaders(r)
+		return articleFinish(r, false)
 	}
-	if !regexp.MustCompile(`/(?:note|review)/(\d+)`).MatchString(raw) {
+	// Preserve the existing note/review extension; upstream only guarantees group topics.
+	if !regexp.MustCompile(`^/(?:note|review)/\d+(?:/|$)`).MatchString(u.Path) {
 		return nil, fmt.Errorf("豆瓣支持小组话题、日记和评论链接")
 	}
-	b, final, e := Get(ctx, c, raw, h)
-	if e != nil {
-		return nil, e
+	b, final, err := Get(ctx, c, raw, h)
+	if err != nil {
+		return nil, err
 	}
-	r.SourceURL = final
-	d, e := mainlandDoc(string(b))
-	if e != nil {
-		return nil, e
+	r.SourceURL = articleCanonical(final)
+	d, err := mainlandDoc(string(b))
+	if err != nil {
+		return nil, err
 	}
 	body := d.Find("#link-report .note,.note-content,#link-report .review-content,.review-content").First()
 	if body.Length() == 0 {
@@ -222,185 +281,203 @@ func mainlandDouban(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	}
 	r.Title = strings.TrimSpace(d.Find("h1").First().Text())
 	r.Author = strings.TrimSpace(d.Find(".note-author,.main-hd .name").First().Text())
-	s, _ := body.Html()
-	_ = mainlandBody(r, s)
-	r.Type = "article"
-	for i := range r.Media {
-		r.Media[i].Headers = Headers("", "https://www.douban.com/")
+	source, _ := body.Html()
+	if err := mainlandBody(r, source); err != nil {
+		return nil, err
 	}
-	return mainlandFinish(r, body.Find("video").Length() > 0)
+	referenceSetHTML(r, source)
+	r.Type = "article"
+	articleDoubanHeaders(r)
+	return articleFinish(r, body.Find("video").Length() > 0)
 }
 
 func mainlandBangumi(ctx context.Context, c *http.Client, raw, cookie string) (*model.ParseResult, error) {
-	match := regexp.MustCompile(`/(?:(subject|group)/topic|rakuen/topic/(subject|group)|(blog))/(\d+)`).FindStringSubmatch(raw)
+	ctx = netx.WithoutCookies(ctx)
+	match := regexp.MustCompile(`/(?:(subject|group)/topic|rakuen/topic/(subject|group)|(blog))/(\d+)(?:[/?#]|$)`).FindStringSubmatch(raw)
 	if len(match) == 0 {
 		return nil, fmt.Errorf("Bangumi 支持讨论主题和日志链接")
 	}
-	kind := mainlandFirst(match[1], match[2], match[3])
-	id := match[4]
+	kind, id := mainlandFirst(match[1], match[2], match[3]), match[4]
 	endpoint := "https://next.bgm.tv/p1/"
-	if kind == "blog" {
+	switch kind {
+	case "blog":
 		endpoint += "blogs/" + id
-	} else if kind == "subject" {
+	case "subject":
 		endpoint += "subjects/-/topics/" + id
-	} else {
+	default:
 		endpoint += "groups/-/topics/" + id
 	}
 	var v any
-	if e := JSON(ctx, c, endpoint, Headers(cookie, "https://bgm.tv/"), &v); e != nil {
-		return nil, e
+	if err := JSON(ctx, c, endpoint, Headers("", "https://bgm.tv/"), &v); err != nil {
+		return nil, err
 	}
-	r := mainlandResult("bangumi", raw)
+	if _, ok := v.(map[string]any); !ok {
+		return nil, fmt.Errorf("Bangumi 接口未返回有效对象")
+	}
+	r := mainlandResult("bangumi", articleCanonical(raw))
 	r.Title = Text(Path(v, "title"))
 	source := Text(Path(v, "content"))
 	if kind != "blog" {
-		replies := Array(Path(v, "replies"))
-		if len(replies) > 0 {
+		source = ""
+		if replies := Array(Path(v, "replies")); len(replies) > 0 {
 			source = Text(Path(replies[0], "content"))
 			r.Author = Text(Path(replies[0], "user", "nickname"))
 		}
 	}
-	images := regexp.MustCompile(`(?is)\[(img|photo)(?:=[^\]]*)?\](.*?)\[/(?:img|photo)\]`)
-	source = images.ReplaceAllStringFunc(source, func(s string) string {
-		m := images.FindStringSubmatch(s)
-		u := strings.TrimSpace(m[2])
-		if strings.EqualFold(m[1], "photo") {
-			u = "https://lain.bgm.tv/pic/photo/l/" + strings.TrimLeft(u, "/")
-		}
-		mainlandAdd(r, "image", u, nil)
-		return ""
-	})
-	source = regexp.MustCompile(`(?i)\[/?(?:url|b|i|s|u|mask|quote|code|user|size|color|align|left|right|center)(?:=[^\]]*)?\]`).ReplaceAllString(source, "")
-	r.Content = strings.TrimSpace(source)
-	r.Type = "article"
+	rendered, images := articleBBCodeHTML(source)
 	if kind == "blog" {
 		var photos any
-		if e := JSON(ctx, c, "https://next.bgm.tv/p1/blogs/"+id+"/photos?limit=100", Headers(cookie, "https://bgm.tv/"), &photos); e != nil {
-			return nil, fmt.Errorf("Bangumi 日志照片读取失败: %w", e)
+		if err := JSON(ctx, c, endpoint+"/photos?limit=100", Headers("", "https://bgm.tv/"), &photos); err != nil {
+			return nil, fmt.Errorf("Bangumi 日志照片读取失败: %w", err)
 		}
-		for _, p := range Array(Path(photos, "data")) {
-			if target := Text(Path(p, "target")); target != "" {
-				mainlandAdd(r, "image", "https://lain.bgm.tv/pic/photo/l/"+strings.TrimLeft(target, "/"), nil)
+		for _, photo := range Array(Path(photos, "data")) {
+			if target := Text(Path(photo, "target")); target != "" {
+				image := "https://lain.bgm.tv/pic/photo/l/" + strings.TrimLeft(target, "/")
+				if !articleContains(images, image) {
+					images = append(images, image)
+					rendered += "<p>" + articleImageHTML(image) + "</p>"
+				}
 			}
 		}
 	}
-	return mainlandFinish(r, false)
+	for _, image := range images {
+		mainlandAdd(r, "image", image, nil)
+	}
+	referenceSetHTML(r, rendered)
+	r.Type = "article"
+	return articleFinish(r, false)
 }
 
 func mainlandToutiao(ctx context.Context, c *http.Client, raw, cookie string) (*model.ParseResult, error) {
+	ctx = netx.WithoutCookies(ctx)
 	re := regexp.MustCompile(`toutiao\.com/(?:(?:article|video|w|group|item)/|a|i)(\d+)`)
-	m := re.FindStringSubmatch(raw)
-	if len(m) == 0 {
-		_, final, e := Get(ctx, c, raw, Headers(cookie, raw))
-		if e != nil {
-			return nil, e
+	match := re.FindStringSubmatch(raw)
+	if len(match) == 0 {
+		_, final, err := Get(ctx, c, raw, Headers("", raw))
+		if err != nil {
+			return nil, err
 		}
 		raw = final
-		m = re.FindStringSubmatch(raw)
+		match = re.FindStringSubmatch(raw)
 	}
-	if len(m) == 0 {
+	if len(match) == 0 {
 		return nil, fmt.Errorf("头条链接缺少内容 ID")
 	}
 	var v any
-	h := Headers(cookie, "https://m.toutiao.com/")
-	h["User-Agent"] = mainlandMobileUA
-	if e := JSON(ctx, c, "https://m.toutiao.com/i"+m[1]+"/info/v2/", h, &v); e != nil {
-		return nil, e
+	if err := JSON(ctx, c, "https://m.toutiao.com/i"+match[1]+"/info/v2/", Headers("", "https://m.toutiao.com/"), &v); err != nil {
+		return nil, err
 	}
 	data := Obj(Path(v, "data"))
-	if len(data) == 0 {
-		return nil, fmt.Errorf("头条内容不存在、已删除或访问受限")
+	if Path(v, "data") == nil {
+		return nil, ContentUnavailableError{Reason: "今日头条内容不存在或已删除"}
 	}
-	r := mainlandResult("toutiao", raw)
+	r := mainlandResult("toutiao", articleCanonical(raw))
 	r.Title = Text(data["title"])
 	r.Author = mainlandFirst(data["source"], data["media_name"])
-	if thread := Path(data, "thread", "thread_base"); thread != nil {
-		r.Content = Text(Path(thread, "content"))
+	if _, exists := data["thread"]; exists {
+		thread := Path(data, "thread", "thread_base")
+		r.Title = ""
+		r.Content = strings.TrimSpace(Text(Path(thread, "content")))
+		r.Type = "image"
 		for _, image := range Array(Path(thread, "large_image_list")) {
 			mainlandAdd(r, "image", Text(Path(image, "url")), Obj(image))
 		}
-		return mainlandFinish(r, false)
+		return articleFinish(r, false)
 	}
-	source := Text(data["content"])
-	d, e := mainlandDoc(source)
-	if e != nil {
-		return nil, e
-	}
-	var tokens []string
-	d.Find(".tt-video-box").Each(func(_ int, s *goquery.Selection) {
-		token, _ := s.Attr("data-token")
-		tokens = append(tokens, token)
-		s.Remove()
-	})
-	if token := Text(data["play_auth_token_v2"]); token != "" {
-		tokens = append(tokens, token)
-	}
-	htmlBody, _ := d.Html()
-	_ = mainlandBody(r, htmlBody)
-	expected := len(tokens) > 0 || strings.Contains(raw, "/video/") || Text(data["video_id"]) != ""
-	for _, token := range tokens {
-		if token == "" {
-			return nil, fmt.Errorf("头条视频缺少播放授权 token")
+	if token := Text(data["play_auth_token_v2"]); Text(data["biz_tag"]) != "图文" && token != "" {
+		video, err := mainlandToutiaoVideo(ctx, c, token, Headers("", r.SourceURL))
+		if err != nil {
+			return nil, err
 		}
-		video, e := mainlandToutiaoVideo(ctx, c, token, Headers("", raw))
-		if e != nil {
-			return nil, e
+		if duration := Number(data["video_duration"]); duration != 0 {
+			video.Duration = duration
 		}
-		if video.Duration == 0 {
-			video.Duration = Number(data["video_duration"])
-		}
-		if video.ThumbnailURL == "" {
-			video.ThumbnailURL = Text(data["poster_url"])
-		}
-		video.Headers = Headers("", raw)
+		video.ThumbnailURL = mainlandURL(Text(data["poster_url"]), raw)
+		video.Headers = Headers("", r.SourceURL)
 		r.Media = append(r.Media, video)
+		r.Type = "video"
+		return articleFinish(r, true)
 	}
-	if !expected {
-		r.Type = "article"
+	d, err := mainlandDoc(Text(data["content"]))
+	if err != nil {
+		return nil, err
 	}
-	return mainlandFinish(r, expected)
+	var embeddedErr error
+	d.Find("div.tt-video-box").EachWithBreak(func(_ int, box *goquery.Selection) bool {
+		token, _ := box.Attr("data-token")
+		video, err := mainlandToutiaoVideo(ctx, c, token, Headers("", r.SourceURL))
+		if err != nil {
+			embeddedErr = err
+			return false
+		}
+		video.Headers = Headers("", r.SourceURL)
+		r.Media = append(r.Media, video)
+		box.Remove()
+		return true
+	})
+	if embeddedErr != nil {
+		return nil, embeddedErr
+	}
+	d.Find("img").Each(func(_ int, image *goquery.Selection) {
+		src, _ := image.Attr("src")
+		mainlandAdd(r, "image", src, nil)
+	})
+	// Reference media order is images first, followed by resolved embedded videos.
+	var images, videos []model.Media
+	for _, media := range r.Media {
+		if media.Kind == "image" {
+			images = append(images, media)
+		} else {
+			videos = append(videos, media)
+		}
+	}
+	r.Media = append(images, videos...)
+	source, _ := d.Html()
+	referenceSetHTML(r, source)
+	r.Type = "article"
+	return articleFinish(r, false)
 }
+
 func mainlandToutiaoVideo(ctx context.Context, c *http.Client, token string, h map[string]string) (model.Media, error) {
 	out := model.Media{Kind: "video"}
-	b, e := base64.RawURLEncoding.DecodeString(strings.TrimRight(token, "="))
-	if e != nil {
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(token, "="))
+	if err != nil {
 		return out, fmt.Errorf("头条播放 token 编码错误")
 	}
-	var t any
-	if e = json.Unmarshal(b, &t); e != nil {
-		return out, e
+	var decoded any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		return out, fmt.Errorf("头条播放 token 不是有效 JSON: %w", err)
 	}
-	query := Text(Path(t, "GetPlayInfoToken"))
+	query := Text(Path(decoded, "GetPlayInfoToken"))
 	if query == "" {
 		return out, fmt.Errorf("头条播放 token 缺少 GetPlayInfoToken")
 	}
-	if _, e = url.ParseQuery(query); e != nil {
-		return out, e
+	if _, err := url.ParseQuery(query); err != nil {
+		return out, fmt.Errorf("头条播放 token 查询参数无效: %w", err)
 	}
-	var v any
-	if e = JSON(ctx, c, "https://vod.bytedanceapi.com/?"+query, h, &v); e != nil {
-		return out, e
+	var payload any
+	if err := JSON(ctx, c, "https://vod.bytedanceapi.com/?"+query, h, &payload); err != nil {
+		return out, err
 	}
-	if err := Path(v, "ResponseMetadata", "Error"); err != nil {
-		return out, fmt.Errorf("头条点播接口: %s", mainlandFirst(Path(err, "Message"), Path(err, "message"), err))
+	if failure := Path(payload, "ResponseMetadata", "Error"); failure != nil {
+		return out, fmt.Errorf("头条点播接口: %s", mainlandFirst(Path(failure, "Message"), Path(failure, "message"), Path(failure, "ErrorMessage"), failure))
 	}
-	best := float64(-1)
-	for _, p := range Array(Path(v, "Result", "Data", "PlayInfoList")) {
-		score := Number(Path(p, "Height"))*1e12 + Number(Path(p, "Size"))
-		if u := mainlandURL(Text(Path(p, "MainPlayUrl")), "https://vod.bytedanceapi.com/"); u != "" && score > best {
-			best = score
-			out.URL = u
-			out.Width = int(Number(Path(p, "Width")))
-			out.Height = int(Number(Path(p, "Height")))
-			out.Duration = Number(Path(p, "Duration"))
-			out.BackupURLs = nil
-			if u := mainlandURL(Text(Path(p, "BackupPlayUrl")), out.URL); u != "" {
-				out.BackupURLs = []string{u}
-			}
+	var best any
+	for _, info := range Array(Path(payload, "Result", "Data", "PlayInfoList")) {
+		if best == nil || Number(Path(info, "Height")) > Number(Path(best, "Height")) ||
+			(Number(Path(info, "Height")) == Number(Path(best, "Height")) && Number(Path(info, "Size")) > Number(Path(best, "Size"))) {
+			best = info
 		}
 	}
+	out.URL = mainlandURL(Text(Path(best, "MainPlayUrl")), "")
 	if out.URL == "" {
 		return out, fmt.Errorf("头条点播接口未返回可播放的视频")
+	}
+	out.Width = int(Number(Path(best, "Width")))
+	out.Height = int(Number(Path(best, "Height")))
+	out.Duration = Number(Path(best, "Duration"))
+	if backup := mainlandURL(Text(Path(best, "BackupPlayUrl")), out.URL); backup != "" {
+		out.BackupURLs = []string{backup}
 	}
 	return out, nil
 }

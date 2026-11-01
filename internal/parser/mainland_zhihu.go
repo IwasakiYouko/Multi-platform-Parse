@@ -1,10 +1,13 @@
 package parser
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"html"
 	"math/bits"
 	"net/http"
 	"net/url"
@@ -13,28 +16,70 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"multiparse/internal/model"
+	"multiparse/internal/netx"
 )
 
 func init() { Register("zhihu", mainlandZhihu) }
 func mainlandZhihu(ctx context.Context, c *http.Client, raw, cookie string) (*model.ParseResult, error) {
-	r := mainlandResult("zhihu", raw)
-	r.Type = "article"
+	ctx = netx.WithExplicitCookies(ctx)
+	if strings.TrimSpace(cookie) == "" {
+		return nil, fmt.Errorf("知乎需要配置已登录的 Cookie")
+	}
+	return mainlandZhihuParse(ctx, c, raw, cookie, make(map[string]bool))
+}
+
+func mainlandZhihuParse(ctx context.Context, c *http.Client, raw, cookie string, seen map[string]bool) (*model.ParseResult, error) {
 	u, e := url.Parse(raw)
 	if e != nil {
 		return nil, e
 	}
-	if u.Hostname() == "daily.zhihu.com" || strings.Contains(u.Path, "/story/") {
-		m := regexp.MustCompile(`/story/(\d+)`).FindStringSubmatch(u.Path)
+	if (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Port() != "" {
+		return nil, fmt.Errorf("知乎链接格式无效")
+	}
+	switch u.Hostname() {
+	case "www.zhihu.com", "zhuanlan.zhihu.com", "daily.zhihu.com":
+	default:
+		return nil, fmt.Errorf("知乎原文链接必须使用官方域名")
+	}
+	if seen[raw] || len(seen) >= 8 {
+		return nil, fmt.Errorf("知乎日报原文链接循环或递归过深")
+	}
+	seen[raw] = true
+	r := mainlandResult("zhihu", raw)
+	r.Type = "article"
+	if u.Hostname() == "daily.zhihu.com" || strings.HasPrefix(u.Path, "/story/") {
+		m := regexp.MustCompile(`^/story/(\d+)(?:/|$)`).FindStringSubmatch(u.Path)
 		if len(m) == 0 {
 			return nil, fmt.Errorf("知乎日报链接缺少 story ID")
 		}
 		var v any
-		if e = JSON(ctx, c, "https://daily.zhihu.com/api/7/story/"+m[1], Headers("", raw), &v); e != nil {
+		if e = JSON(netx.WithoutCookies(ctx), c, "https://daily.zhihu.com/api/7/story/"+m[1], Headers("", ""), &v); e != nil {
 			return nil, e
 		}
-		r.Title = Text(Path(v, "title"))
-		_ = mainlandBody(r, Text(Path(v, "body")))
-		return mainlandFinish(r, false)
+		if err := mainlandZhihuAPIError(v); err != nil {
+			return nil, err
+		}
+		doc, err := mainlandDoc(Text(Path(v, "body")))
+		if err != nil {
+			return nil, err
+		}
+		origin := ""
+		doc.Find("a").EachWithBreak(func(_ int, s *goquery.Selection) bool {
+			if strings.Contains(s.Text(), "查看知乎原文") {
+				href, _ := s.Attr("href")
+				origin = mainlandURL(href, raw)
+				return false
+			}
+			return true
+		})
+		if origin == "" {
+			return nil, fmt.Errorf("未在知乎日报中找到原文链接")
+		}
+		result, err := mainlandZhihuParse(ctx, c, origin, cookie, seen)
+		if err == nil {
+			result.SourceURL = raw
+		}
+		return result, err
 	}
 	dc := mainlandCookie(cookie, "d_c0")
 	if dc == "" {
@@ -42,24 +87,38 @@ func mainlandZhihu(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 	}
 	endpoint := ""
 	pin, video := false, false
-	if m := regexp.MustCompile(`/answer/(\d+)`).FindStringSubmatch(u.Path); len(m) > 0 {
-		endpoint = "https://www.zhihu.com/api/v4/answers/" + m[1] + "?include=content"
-	} else if m := regexp.MustCompile(`/question/(\d+)`).FindStringSubmatch(u.Path); len(m) > 0 {
+	if m := regexp.MustCompile(`^/(?:question/\d+/)?answer/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
+		endpoint = "https://www.zhihu.com/api/v4/answers/" + m[1] + "?include=data%5B%2A%5D.content"
+	} else if m := regexp.MustCompile(`^/question/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
 		var listing any
 		if e = mainlandZhihuJSON(ctx, c, "https://www.zhihu.com/api/v4/questions/"+m[1]+"/answers?offset=&limit=1&sort_by=default&include=data%5B%2A%5D.content", cookie, dc, &listing); e != nil {
 			return nil, e
 		}
 		answers := Array(Path(listing, "data"))
 		if len(answers) == 0 {
-			return nil, fmt.Errorf("知乎问题没有可读取回答，可能需要登录或权限")
+			var question any
+			if e = mainlandZhihuJSON(ctx, c, "https://www.zhihu.com/api/v4/questions/"+m[1], cookie, dc, &question); e != nil {
+				return nil, e
+			}
+			r.Title = Text(Path(question, "title"))
+			r.Type = "multimedia"
+			if r.Title == "" {
+				return nil, fmt.Errorf("知乎问题没有标题")
+			}
+			return r, nil
 		}
-		endpoint = "https://www.zhihu.com/api/v4/answers/" + Text(Path(answers[0], "id")) + "?include=content"
-	} else if m := regexp.MustCompile(`/(?:appview/)?p/(\d+)`).FindStringSubmatch(u.Path); len(m) > 0 {
+		id := Text(Path(answers[0], "id"))
+		if !regexp.MustCompile(`^\d+$`).MatchString(id) {
+			return nil, fmt.Errorf("知乎回答 ID 格式无效")
+		}
+		endpoint = "https://www.zhihu.com/api/v4/answers/" + id + "?include=data%5B%2A%5D.content"
+	} else if m := regexp.MustCompile(`^/(?:appview/)?p/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
 		endpoint = "https://zhuanlan.zhihu.com/api/articles/" + m[1]
-	} else if m := regexp.MustCompile(`/pin/(\d+)`).FindStringSubmatch(u.Path); len(m) > 0 {
+	} else if m := regexp.MustCompile(`^/pin/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
 		endpoint = "https://www.zhihu.com/api/v4/pins/" + m[1]
 		pin = true
-	} else if m := regexp.MustCompile(`/zvideo/(\d+)`).FindStringSubmatch(u.Path); len(m) > 0 {
+	} else if m := regexp.MustCompile(`^/zvideo/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
+		// Retained extension: standalone zvideo links are outside the reference adapter.
 		endpoint = "https://www.zhihu.com/api/v4/zvideos/" + m[1]
 		video = true
 	} else {
@@ -70,8 +129,10 @@ func mainlandZhihu(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 		return nil, e
 	}
 	r.Title = mainlandFirst(Path(v, "title"), Path(v, "question", "title"))
+	if strings.Contains(endpoint, "/answers/") {
+		r.Title = Text(Path(v, "question", "title"))
+	}
 	r.Author = Text(Path(v, "author", "name"))
-	expected := video
 	if video {
 		r.Type = "video"
 		r.Content = mainlandText(mainlandFirst(Path(v, "description"), Path(v, "title")))
@@ -82,103 +143,103 @@ func mainlandZhihu(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 				}
 			}
 		}
-	} else if pin {
-		r.Type = ""
+		return mainlandFinish(r, true)
+	}
+	if pin {
+		kind := "image"
 		for _, part := range Array(Path(v, "content")) {
 			switch Text(Path(part, "type")) {
 			case "text":
-				r.Title = mainlandFirst(Path(part, "title"), r.Title)
-				old := r.Content
-				_ = mainlandBody(r, Text(Path(part, "content")))
-				if old != "" {
-					r.Content = old + "\n" + r.Content
-				}
+				r.Title = Text(Path(part, "title"))
+				r.Content, _ = referenceHTML(Text(Path(part, "content")), raw)
 			case "image":
-				mainlandAdd(r, "image", mainlandFirst(Path(part, "original_url"), Path(part, "url")), Obj(part))
+				kind = "image"
+				mainlandAdd(r, "image", Text(Path(part, "original_url")), map[string]any{"thumbnail": Path(part, "url"), "width": Path(part, "width"), "height": Path(part, "height")})
 			case "video":
-				expected = true
+				kind = "video"
 				if !mainlandZhihuPlaylist(r, Path(part, "video_info")) {
-					id := mainlandFirst(Path(part, "video_id"), Path(part, "video_info", "video_id"), Path(part, "video_info", "id"))
-					if id != "" {
-						if e = mainlandZhihuLens(ctx, c, r, id); e != nil {
-							return nil, e
-						}
-					}
+					return nil, fmt.Errorf("知乎想法视频没有可播放清晰度")
 				}
 			}
 		}
-	} else {
-		source := Text(Path(v, "content"))
-		_ = mainlandBody(r, source)
-		doc, e := mainlandDoc(source)
-		if e != nil {
-			return nil, e
-		}
-		var videoIDs []string
-		doc.Find("[data-video-id],a.video-box,iframe[src*='video'],[data-lens-id]").Each(func(_ int, s *goquery.Selection) {
-			expected = true
-			id, _ := s.Attr("data-video-id")
-			if id == "" {
-				id, _ = s.Attr("data-lens-id")
-			}
-			if id == "" {
-				for _, key := range []string{"href", "src"} {
-					v, _ := s.Attr(key)
-					if match := regexp.MustCompile(`(?:video/|videos/|video_id=)(\d+)`).FindStringSubmatch(v); len(match) > 0 {
-						id = match[1]
-						break
-					}
-				}
-			}
-			if id != "" {
-				videoIDs = append(videoIDs, id)
-			}
-		})
-		seen := map[string]bool{}
-		for _, id := range videoIDs {
-			if !seen[id] {
-				seen[id] = true
-				if e = mainlandZhihuLens(ctx, c, r, id); e != nil {
-					return nil, e
-				}
+		// The reference accidentally selects an image as video for mixed pins.
+		// Keep the final declared type, but only media of that actual type.
+		media := r.Media[:0]
+		for _, m := range r.Media {
+			if m.Kind == kind {
+				media = append(media, m)
 			}
 		}
-		for _, entry := range Array(Path(v, "attachment")) {
-			if Text(Path(entry, "type")) == "video" {
-				expected = true
-				if !mainlandZhihuPlaylist(r, entry) {
-					if id := mainlandFirst(Path(entry, "video_id"), Path(entry, "id")); id != "" {
-						if e = mainlandZhihuLens(ctx, c, r, id); e != nil {
-							return nil, e
-						}
-					}
-				}
-			}
+		r.Media = media
+		if kind == "video" && len(r.Media) > 1 {
+			r.Media = r.Media[:1]
 		}
+		r.Type = kind
+		if kind == "image" && r.Content == "" && len(r.Media) == 0 && r.Title != "" {
+			return r, nil
+		}
+		return mainlandFinish(r, kind == "video")
 	}
-	return mainlandFinish(r, expected)
+	source := Text(Path(v, "content"))
+	doc, e := mainlandDoc(source)
+	if e != nil {
+		return nil, e
+	}
+	doc.Find("img").Each(func(_ int, s *goquery.Selection) {
+		src, _ := s.Attr("src")
+		if strings.HasPrefix(src, "data:image/svg") {
+			alt, _ := s.Attr("alt")
+			s.ReplaceWithHtml(html.EscapeString(alt))
+			return
+		}
+		if !strings.Contains(src, "/equation") {
+			mainlandAdd(r, "image", src, nil)
+		}
+	})
+	normalized, e := doc.Html()
+	if e != nil {
+		return nil, e
+	}
+	referenceSetHTML(r, normalized)
+	// QA and articles expose rich text and images, not inferred audio/video.
+	if r.MarkdownContent == "" && strings.Contains(endpoint, "/answers/") {
+		r.Type = "multimedia"
+	}
+	if r.Title == "" && r.Content == "" && len(r.Media) == 0 {
+		return nil, fmt.Errorf("知乎没有可读取的正文或标题")
+	}
+	return r, nil
 }
+
 func mainlandZhihuPlaylist(r *model.ParseResult, v any) bool {
 	playlist := Obj(Path(v, "playlist"))
 	best := ""
 	score := float64(-1)
 	var details map[string]any
+	if entries, ok := Path(v, "playlist").([]any); ok {
+		if len(entries) == 0 {
+			return false
+		}
+		details = Obj(entries[0])
+		best = mainlandFirst(details["url"], details["play_url"])
+		if best == "" {
+			return false
+		}
+	}
 	for _, p := range playlist {
 		u := mainlandFirst(Path(p, "play_url"), Path(p, "url"))
 		s := Number(Path(p, "height"))*1e9 + Number(Path(p, "bitrate"))
-		if u != "" && s > score {
-			best = u
-			score = s
-			details = Obj(p)
+		if u != "" && (s > score || s == score && u < best) {
+			best, score, details = u, s, Obj(p)
 		}
 	}
 	if best == "" {
 		return false
 	}
-	copy := map[string]any{"width": details["width"], "height": details["height"], "duration": Path(v, "duration"), "thumbnail": mainlandFirst(Path(v, "thumbnail"), Path(v, "cover_url"), Path(v, "cover"))}
-	mainlandAdd(r, "video", best, copy)
+	mainlandAdd(r, "video", best, map[string]any{"width": details["width"], "height": details["height"], "duration": Path(v, "duration"), "thumbnail": mainlandFirst(Path(v, "thumbnail"), Path(v, "cover_url"), Path(v, "cover"))})
 	return true
 }
+
 func mainlandZhihuLens(ctx context.Context, c *http.Client, r *model.ParseResult, id string) error {
 	if !regexp.MustCompile(`^\d+$`).MatchString(id) {
 		return fmt.Errorf("知乎视频 ID 格式无效")
@@ -188,10 +249,18 @@ func mainlandZhihuLens(ctx context.Context, c *http.Client, r *model.ParseResult
 		return e
 	}
 	if !mainlandZhihuPlaylist(r, v) {
-		return fmt.Errorf("知乎视频 %s 未返回可播放清晰度，可能已删除或权限不足", id)
+		return fmt.Errorf("知乎视频 %s 未返回可播放清晰度", id)
 	}
 	return nil
 }
+
+func mainlandZhihuAPIError(v any) error {
+	if err := Path(v, "error"); err != nil {
+		return fmt.Errorf("知乎接口 %s: %s", Text(Path(err, "code")), Text(Path(err, "message")))
+	}
+	return nil
+}
+
 func mainlandZhihuJSON(ctx context.Context, c *http.Client, endpoint, cookie, dc string, target *any) error {
 	u, e := url.Parse(endpoint)
 	if e != nil {
@@ -207,16 +276,65 @@ func mainlandZhihuJSON(ctx context.Context, c *http.Client, endpoint, cookie, dc
 	}
 	h := Headers(cookie, "https://zhuanlan.zhihu.com/")
 	h["Origin"] = "https://zhuanlan.zhihu.com"
+	h["Accept"] = "*/*"
+	h["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6"
+	h["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0"
+	h["Sec-Ch-Ua"] = `"Microsoft Edge";v="123", "Not:A-Brand";v="8", "Chromium";v="123"`
+	h["Sec-Ch-Ua-Mobile"] = "?0"
+	h["Sec-Ch-Ua-Platform"] = `"Windows"`
+	h["Sec-Fetch-Dest"] = "empty"
+	h["Sec-Fetch-Mode"] = "cors"
+	h["Sec-Fetch-Site"] = "same-site"
 	h["X-Zse-93"] = "101_3_3.0"
 	h["X-Zse-96"] = sig
 	h["X-Requested-With"] = "fetch"
-	if e = JSON(ctx, c, endpoint, h, target); e != nil {
+	var body json.RawMessage
+	if e = JSON(ctx, c, endpoint, h, &body); e != nil {
 		return fmt.Errorf("知乎接口访问失败；请检查登录 Cookie 或访问验证: %w", e)
 	}
-	if v := Path(*target, "error"); v != nil {
-		return fmt.Errorf("知乎接口 %s: %s", Text(Path(v, "code")), Text(Path(v, "message")))
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if e = decoder.Decode(target); e != nil {
+		return e
 	}
-	return nil
+	if strings.HasPrefix(u.Path, "/api/v4/pins/") {
+		var wire struct {
+			Content []struct {
+				VideoInfo struct {
+					Playlist json.RawMessage `json:"playlist"`
+				} `json:"video_info"`
+			} `json:"content"`
+		}
+		if e = json.Unmarshal(body, &wire); e != nil {
+			return e
+		}
+		parts := Array(Path(*target, "content"))
+		for i, part := range wire.Content {
+			if len(part.VideoInfo.Playlist) == 0 || string(part.VideoInfo.Playlist) == "null" {
+				continue
+			}
+			playlistDecoder := json.NewDecoder(bytes.NewReader(part.VideoInfo.Playlist))
+			token, err := playlistDecoder.Token()
+			if err != nil || token != json.Delim('{') {
+				return fmt.Errorf("知乎想法视频清晰度格式无效")
+			}
+			var entries []any
+			for playlistDecoder.More() {
+				if _, e = playlistDecoder.Token(); e != nil {
+					return e
+				}
+				var entry any
+				if e = playlistDecoder.Decode(&entry); e != nil {
+					return e
+				}
+				entries = append(entries, entry)
+			}
+			if videoInfo := Obj(Path(parts[i], "video_info")); videoInfo != nil {
+				videoInfo["playlist"] = entries
+			}
+		}
+	}
+	return mainlandZhihuAPIError(*target)
 }
 
 var mainlandZhihuSBox = [256]byte{

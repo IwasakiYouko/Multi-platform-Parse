@@ -162,7 +162,7 @@ func mainlandBody(r *model.ParseResult, source string) error {
 			r.Media[before].BackupURLs = urls[1:]
 		}
 	})
-	r.Content = mainlandText(source)
+	referenceSetHTML(r, source)
 	return nil
 }
 
@@ -209,7 +209,7 @@ func mainlandFinish(r *model.ParseResult, expectedVideo bool) (*model.ParseResul
 	for _, m := range r.Media {
 		if m.Kind == "video" {
 			video = true
-		} else if m.Kind == "image" {
+		} else if m.Kind == "image" || m.Kind == "gif" || m.Kind == "livephoto" {
 			image = true
 		}
 	}

@@ -402,12 +402,15 @@ func (g *guardedTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	target, ok := model.Identify(r.URL.String())
 	if r.Context().Value(redirectCredentialKey{}) == true {
 		r.Header.Del("Cookie")
+	} else if r.Context().Value(processCookieKey{}) == true && r.Context().Value(explicitCookieKey{}) == true {
+		// The isolated extractor owns a domain/path-scoped jar; never inject the
+		// application's configured Cookie or discard server-session CDN cookies.
 	} else if !cookieScope(g.platform, r.URL) {
 		r.Header.Del("Cookie")
 		for _, cookie := range g.jar.Cookies(r.URL) {
 			r.AddCookie(cookie)
 		}
-	} else if configured := g.cfg.Platforms[g.platform].Cookie; configured != "" {
+	} else if configured := g.cfg.Platforms[g.platform].Cookie; configured != "" && r.Context().Value(explicitCookieKey{}) != true {
 		cookieRequest := &http.Request{Header: http.Header{"Cookie": []string{configured}}}
 		for _, cookie := range cookieRequest.Cookies() {
 			if _, err := r.Cookie(cookie.Name); err == http.ErrNoCookie {

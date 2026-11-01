@@ -3,7 +3,9 @@ package main
 
 import (
 	"bytes"
+	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +22,12 @@ type module struct {
 	Main               bool
 	Replace            *module
 }
+
+// Supplemental texts recover explicitly referenced, omitted upstream notices.
+// Directories are keyed by exact module@version; unknown versions still fail.
+//
+//go:embed supplemental
+var supplemental embed.FS
 
 func main() {
 	out := flag.String("out", "", "required output directory")
@@ -79,6 +87,12 @@ func main() {
 			fail(err)
 		}
 		if !licensed {
+			licensed, err = bundleSupplemental(m, *out)
+			if err != nil {
+				fail(err)
+			}
+		}
+		if !licensed {
 			fail(fmt.Errorf("no license text found for %s@%s", m.Path, m.Version))
 		}
 	}
@@ -90,6 +104,38 @@ func main() {
 	if err := os.WriteFile(filepath.Join(*out, "go", "VERSION"), []byte(runtime.Version()+"\n"), 0o644); err != nil {
 		fail(err)
 	}
+}
+
+func bundleSupplemental(m module, out string) (bool, error) {
+	root := "supplemental/" + m.Path + "@" + m.Version
+	entries, err := supplemental.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	destination := filepath.Join(out, "modules", m.Path+"@"+m.Version)
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		return false, err
+	}
+	licensed := false
+	for _, entry := range entries {
+		data, err := supplemental.ReadFile(root + "/" + entry.Name())
+		if err != nil {
+			return false, err
+		}
+		if len(data) == 0 {
+			return false, fmt.Errorf("empty supplemental attribution: %s", entry.Name())
+		}
+		if err := os.WriteFile(filepath.Join(destination, entry.Name()), data, 0o644); err != nil {
+			return false, err
+		}
+		if entry.Name() == "LICENSE" {
+			licensed = true
+		}
+	}
+	return licensed, nil
 }
 
 func copyFile(source, destination string) error {

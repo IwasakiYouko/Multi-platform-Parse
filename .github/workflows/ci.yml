@@ -19,6 +19,11 @@ jobs:
     name: Race tests, vet, compile, and Compose
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      YTDLP_PYTHON: /opt/yt-dlp/bin/python
+      YTDLP_JS_RUNTIME: /usr/local/bin/deno
+      DENO_NO_UPDATE_CHECK: '1'
+      DENO_NO_PROMPT: '1'
     steps:
       # Official action refs resolved through the GitHub git/ref API; keep SHA pins when updating.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -28,8 +33,13 @@ jobs:
         with:
           go-version: '1.27.3'
           cache: true
-      - name: Install media test dependency
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install pinned extractor and media runtimes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-venv python3-pip
+          sudo /usr/bin/python3 scripts/install_ytdlp_runtime.py
+      - name: Smoke installed extractor without platform requests
+        run: "$YTDLP_PYTHON -I scripts/check_ytdlp_runtime.py"
       - name: Check dependency license collection
         run: |
           go mod download all
@@ -47,6 +57,13 @@ jobs:
           docker compose -f compose.yaml config --quiet
           docker compose -f compose.no-cap.yaml config --quiet
           docker compose -f compose.yaml -f compose.build.yaml config --quiet
+      - name: Check packaged extractor on Debian as non-root
+        run: |
+          docker build --platform linux/amd64 --target app --tag multiparse-runtime-check .
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --env DENO_DIR=/tmp/deno-smoke \
+            --mount "type=bind,src=$PWD/scripts/check_ytdlp_runtime.py,dst=/runtime-smoke.py,readonly" \
+            --entrypoint /opt/yt-dlp/bin/python multiparse-runtime-check -I /runtime-smoke.py
 
   images:
     name: Build and publish linux/amd64 images
@@ -164,7 +181,9 @@ jobs:
           mv release/.env.example release/default.env.example
           printf 'Load images with: `docker load -i multi-platform-parse-%s-linux-amd64.tar.gz`.\n\n' "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes"
           cat >> "$RUNNER_TEMP/release-notes" <<'NOTES'
-          Linux amd64 images for the native Go application and its official Cap-based launcher.
+          Linux amd64 images for the Go application and its official Cap-based launcher. YouTube, Facebook, and Snapchat use the bundled, pinned yt-dlp/EJS/Deno runtime; other platforms use Go adapters.
+
+          Platform migration follows ParseHub 2.3.15 and leaves the existing Bilibili and Douyin parsers unchanged. Use your own platform credentials where login is required; embedded shared upstream cookies are not distributed. See CHANGELOG.md for version-specific changes.
 
           GHCR packages can initially be private. Public installation does not require GHCR access for these two images: download the gzip archive, SHA256SUMS, compose.yaml, compose.no-cap.yaml, and default.env.example from this Release. Save default.env.example locally as .env.example before verifying with `sha256sum -c SHA256SUMS`, then load the archive with the command above. Both versioned image tags match the supplied Compose defaults.
 

@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -94,10 +95,10 @@ var Platforms = []Platform{
 	{"bilibili", "哔哩哔哩", false, []string{"bilibili.com", "b23.tv", "bili2233.cn"}, []string{"video", "image", "article"}},
 	{"douyin", "抖音", false, []string{"douyin.com", "iesdouyin.com"}, []string{"video", "image"}},
 	{"tiktok", "TikTok", true, []string{"tiktok.com"}, []string{"video", "image"}},
-	{"xhs", "小红书", false, []string{"xiaohongshu.com", "xhslink.com"}, []string{"video", "image"}},
+	{"xhs", "小红书", false, []string{"xiaohongshu.com", "xhslink.com", "xhslink.cn"}, []string{"video", "image"}},
 	{"weibo", "微博", false, []string{"weibo.com", "weibo.cn"}, []string{"video", "image"}},
-	{"kuaishou", "快手", false, []string{"kuaishou.com", "gifshow.com"}, []string{"video", "image"}},
-	{"twitter", "Twitter / X", true, []string{"twitter.com", "x.com", "t.co"}, []string{"video", "image", "article"}},
+	{"kuaishou", "快手", false, []string{"kuaishou.com", "gifshow.com", "chenzhongtech.com"}, []string{"video", "image"}},
+	{"twitter", "Twitter / X", true, []string{"twitter.com", "x.com", "t.co", "fixupx.com"}, []string{"video", "image", "article"}},
 	{"instagram", "Instagram", true, []string{"instagram.com", "instagr.am"}, []string{"video", "image"}},
 	{"youtube", "YouTube", true, []string{"youtube.com", "youtu.be", "music.youtube.com"}, []string{"video", "audio"}},
 	{"facebook", "Facebook", true, []string{"facebook.com", "fb.watch", "fb.com"}, []string{"video"}},
@@ -111,7 +112,7 @@ var Platforms = []Platform{
 	{"xiaoheihe", "小黑盒", false, []string{"xiaoheihe.cn", "xiaoheihe.com", "api.xiaoheihe.cn"}, []string{"video", "image"}},
 	{"snapchat", "Snapchat", true, []string{"snapchat.com"}, []string{"video"}},
 	{"zhihu", "知乎", false, []string{"zhihu.com", "zhihu.link"}, []string{"video", "image", "article"}},
-	{"douban", "豆瓣", false, []string{"douban.com", "doubanio.com", "dou.bz"}, []string{"video", "image", "article"}},
+	{"douban", "豆瓣", false, []string{"douban.com", "doubanio.com", "dou.bz", "douc.cc"}, []string{"video", "image", "article"}},
 	{"bangumi", "Bangumi", false, []string{"bgm.tv", "bangumi.tv", "chii.in"}, []string{"image", "article"}},
 	{"toutiao", "今日头条", false, []string{"toutiao.com", "toutiaoimg.cn", "toutiaocdn.com"}, []string{"video", "image", "article"}},
 	{"medium", "Medium", true, []string{"medium.com"}, []string{"image", "article", "video"}},
@@ -260,10 +261,21 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// Extraction preserves the trusted extractor context required to download a result.
+type Extraction struct {
+	Engine   string          `json:"engine"`
+	InfoJSON json.RawMessage `json:"info_json"`
+}
+type FallbackAttempt struct {
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
 type Media struct {
 	Kind         string            `json:"kind"`
 	URL          string            `json:"url"`
 	AudioURL     string            `json:"audio_url,omitempty"`
+	VideoURL     string            `json:"video_url,omitempty"`
 	ThumbnailURL string            `json:"thumbnail_url,omitempty"`
 	BackupURLs   []string          `json:"backup_urls,omitempty"`
 	Headers      map[string]string `json:"headers,omitempty"`
@@ -273,19 +285,24 @@ type Media struct {
 	Ext          string            `json:"ext,omitempty"`
 }
 type ParseResult struct {
-	Platform  string            `json:"platform"`
-	SourceURL string            `json:"source_url"`
-	Title     string            `json:"title"`
-	Author    string            `json:"author,omitempty"`
-	Content   string            `json:"content"`
-	Type      string            `json:"type"`
-	Media     []Media           `json:"media"`
-	Headers   map[string]string `json:"headers,omitempty"`
+	Platform        string            `json:"platform"`
+	SourceURL       string            `json:"source_url"`
+	Title           string            `json:"title"`
+	Author          string            `json:"author,omitempty"`
+	Content         string            `json:"content"`
+	MarkdownContent string            `json:"markdown_content,omitempty"`
+	FallbackErrors  []FallbackAttempt `json:"fallback_errors,omitempty"`
+	Extraction      *Extraction       `json:"extraction,omitempty"`
+	Type            string            `json:"type"`
+	Media           []Media           `json:"media"`
+	Headers         map[string]string `json:"headers,omitempty"`
 }
 type Artifact struct {
 	Kind      string  `json:"kind"`
 	Path      string  `json:"path"`
 	ThumbPath string  `json:"thumb_path,omitempty"`
+	VideoPath string  `json:"video_path,omitempty"`
+	VideoSize int64   `json:"video_size,omitempty"`
 	Size      int64   `json:"size"`
 	Duration  float64 `json:"duration,omitempty"`
 	Width     int     `json:"width,omitempty"`

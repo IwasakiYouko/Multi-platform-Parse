@@ -1,0 +1,17 @@
+Module: github.com/bogdanfinn/fhttp v0.7.3
+Source revision: a8ae93ec6fd46f78f515aacd4234c7d9d5cd8050
+Source: https://github.com/bogdanfinn/fhttp/tree/a8ae93ec6fd46f78f515aacd4234c7d9d5cd8050
+
+The published module and source tree omit the standalone LICENSE file.
+Its Go source files retain The Go Authors copyright notices and explicitly
+state: "Use of this source code is governed by a BSD-style license that
+can be found in the LICENSE file." Examples are client.go (2009),
+header.go (2010), jar.go (2011), and http2/transport.go.
+
+The accompanying LICENSE restores the upstream Go BSD text referenced by
+those notices, copied verbatim from the verified Go 1.27.3 distribution:
+https://github.com/golang/go/blob/go1.27.3/LICENSE
+This supplement is pinned to this exact module version. It is not an
+assumption that arbitrary unlicensed modules, or new fork contributions
+without a license statement, inherit a license merely by being public.
+Keep the source notices and this provenance when redistributing.

@@ -12,6 +12,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -23,62 +24,58 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"multiparse/internal/model"
+	"multiparse/internal/netx"
 )
 
 func init() { Register("xiaoheihe", mainlandXiaoheihe) }
-func mainlandXiaoheihe(ctx context.Context, c *http.Client, raw, cookie string) (*model.ParseResult, error) {
+func mainlandXiaoheihe(ctx context.Context, c *http.Client, raw, _ string) (*model.ParseResult, error) {
+	ctx = netx.WithExplicitCookies(ctx)
 	u, e := url.Parse(raw)
 	if e != nil {
 		return nil, e
 	}
-	id := u.Query().Get("link_id")
-	if id == "" {
-		if m := regexp.MustCompile(`/link/([^/?]+)`).FindStringSubmatch(u.Path); len(m) > 0 {
-			id = m[1]
-		}
+	if !mainlandXHHHost(u) {
+		return nil, fmt.Errorf("小黑盒链接必须使用官方域名")
 	}
+	id := mainlandXHHLinkID(u)
 	if id == "" {
-		_, final, e := Get(ctx, c, raw, Headers(cookie, raw))
-		if e != nil {
-			return nil, e
+		_, final, err := Get(ctx, c, raw, Headers("", raw))
+		if err != nil {
+			return nil, err
 		}
-		raw = final
-		u, _ = url.Parse(raw)
-		id = u.Query().Get("link_id")
-		if id == "" {
-			if m := regexp.MustCompile(`/link/([^/?]+)`).FindStringSubmatch(u.Path); len(m) > 0 {
-				id = m[1]
-			}
+		u, e = url.Parse(final)
+		if e != nil || !mainlandXHHHost(u) {
+			return nil, fmt.Errorf("小黑盒跳转到非官方地址")
 		}
+		id = mainlandXHHLinkID(u)
 	}
 	if id == "" {
 		return nil, fmt.Errorf("小黑盒链接缺少 link_id")
 	}
-	if mainlandCookie(cookie, "x_xhh_tokenid") == "" {
-		token, e := mainlandXHHDevice(ctx, c)
-		if e != nil {
-			return nil, fmt.Errorf("小黑盒设备认证失败: %w", e)
-		}
-		if cookie != "" {
-			cookie += "; "
-		}
-		cookie += "x_xhh_tokenid=" + token
+	token, e := mainlandXHHDevice(ctx, c)
+	if e != nil {
+		return nil, fmt.Errorf("小黑盒设备认证失败: %w", e)
 	}
 	now := time.Now().Unix()
-	nonce, e := mainlandUUID()
-	if e != nil {
+	var random [8]byte
+	if _, e = rand.Read(random[:]); e != nil {
 		return nil, e
 	}
-	nonce = mainlandMD5(strconv.FormatInt(now, 10) + nonce)
-	nonce = strings.ToUpper(nonce)
+	nonce := mainlandXHHNonce(now, strconv.FormatFloat(float64(binary.BigEndian.Uint64(random[:])>>11)/(1<<53), 'f', -1, 64))
 	q := url.Values{"os_type": {"web"}, "app": {"heybox"}, "client_type": {"web"}, "version": {"999.0.4"}, "web_version": {"2.5"}, "x_client_type": {"web"}, "x_app": {"heybox_website"}, "heybox_id": {""}, "x_os_type": {"Windows"}, "device_info": {"Chrome"}, "link_id": {id}, "owner_only": {"1"}, "_time": {strconv.FormatInt(now, 10)}, "nonce": {nonce}, "hkey": {mainlandXHHSign("/bbs/app/link/tree", now+1, nonce)}}
 	var v any
-	if e = JSON(ctx, c, "https://api.xiaoheihe.cn/bbs/app/link/tree?"+q.Encode(), Headers(cookie, "https://www.xiaoheihe.cn/"), &v); e != nil {
+	if e = JSON(ctx, c, "https://api.xiaoheihe.cn/bbs/app/link/tree?"+q.Encode(), Headers("x_xhh_tokenid="+token, "https://www.xiaoheihe.cn/"), &v); e != nil {
 		return nil, e
 	}
-	if Text(Path(v, "status")) != "ok" {
-		return nil, fmt.Errorf("小黑盒接口 %s: %s（登录或验证码限制需在官方客户端处理）", Text(Path(v, "status")), Text(Path(v, "msg")))
+	if status := Text(Path(v, "status")); status != "ok" {
+		messages := map[string]string{"login": "需要登录", "show_captcha": "需要过验证码", "relogin": "需要重新登录", "failed": "请求失败", "lack_token": "缺少token"}
+		message := messages[status]
+		if message == "" {
+			message = status
+		}
+		return nil, fmt.Errorf("小黑盒接口 %s: %s", message, Text(Path(v, "msg")))
 	}
 	link := Obj(Path(v, "result", "link"))
 	if len(link) == 0 {
@@ -87,9 +84,9 @@ func mainlandXiaoheihe(ctx context.Context, c *http.Client, raw, cookie string) 
 	r := mainlandResult("xiaoheihe", raw)
 	r.Title = Text(link["title"])
 	r.Author = mainlandFirst(Path(link, "user", "username"), Path(link, "user", "nickname"))
-	expected := Text(link["has_video"]) == "true" || Number(link["has_video"]) != 0
-	if expected {
-		r.Content = mainlandText(Text(link["text"]))
+	if mainlandXHHTruthy(link["has_video"]) {
+		r.Type = "video"
+		r.Content = Text(link["text"])
 		mainlandAdd(r, "video", Text(link["video_url"]), map[string]any{"thumbnail": link["video_thumb"]})
 		return mainlandFinish(r, true)
 	}
@@ -97,34 +94,93 @@ func mainlandXiaoheihe(ctx context.Context, c *http.Client, raw, cookie string) 
 	if e = json.Unmarshal([]byte(Text(link["text"])), &parts); e != nil {
 		return nil, fmt.Errorf("小黑盒正文格式错误: %w", e)
 	}
-	for _, p := range parts {
-		switch Text(Path(p, "type")) {
-		case "html":
-			fragment := Text(Path(p, "text"))
-			old := r.Content
-			_ = mainlandBody(r, fragment)
-			if old != "" {
-				r.Content = old + "\n" + r.Content
-			}
-		case "img":
-			image := Text(Path(p, "url"))
-			image = mainlandXHHImage(image)
-			mainlandAdd(r, "image", image, Obj(p))
-		default:
-			if s := Text(Path(p, "text")); s != "" {
-				r.Content += "\n" + s
-			}
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("小黑盒正文内容为空")
+	}
+	first := Text(Path(parts[0], "text"))
+	concept := mainlandXHHTruthy(link["use_concept_type"])
+	if Text(Path(parts[0], "type")) == "html" {
+		doc, err := mainlandDoc(first)
+		if err != nil {
+			return nil, err
+		}
+		doc.Find("img").Each(func(_ int, s *goquery.Selection) {
+			original, _ := s.Attr("data-original")
+			s.SetAttr("src", mainlandXHHImage(original))
+			s.RemoveAttr("data-original").RemoveAttr("data-src")
+		})
+		first, e = doc.Html()
+		if e != nil {
+			return nil, e
+		}
+		referenceSetHTML(r, first)
+		if concept {
+			r.Content = r.MarkdownContent
+			r.MarkdownContent = ""
+		}
+	} else {
+		r.Content = first
+		if !concept {
+			r.MarkdownContent = first
 		}
 	}
-	for i := range r.Media {
-		if r.Media[i].Kind == "image" {
-			r.Media[i].URL = mainlandXHHImage(r.Media[i].URL)
-		}
+	r.Type = "article"
+	if concept {
+		r.Type = "image"
 	}
-	if Text(link["use_concept_type"]) != "true" && Number(link["use_concept_type"]) == 0 {
-		r.Type = "article"
+	for _, p := range parts[1:] {
+		if Text(Path(p, "type")) != "img" {
+			continue
+		}
+		thumbnail := Text(Path(p, "url"))
+		kind := "image"
+		if strings.Contains(thumbnail, ".gif") {
+			kind = "gif"
+			if concept {
+				r.Type = "multimedia"
+			}
+		}
+		mainlandAdd(r, kind, mainlandXHHImage(thumbnail), map[string]any{"thumbnail": thumbnail, "width": Path(p, "width"), "height": Path(p, "height")})
+	}
+	if r.Content == "" && len(r.Media) == 0 && r.Title != "" {
+		return r, nil
 	}
 	return mainlandFinish(r, false)
+}
+
+func mainlandXHHHost(u *url.URL) bool {
+	return u != nil && (u.Scheme == "https" || u.Scheme == "http") && u.User == nil && u.Port() == "" && (u.Hostname() == "xiaoheihe.cn" || strings.HasSuffix(u.Hostname(), ".xiaoheihe.cn"))
+}
+
+func mainlandXHHLinkID(u *url.URL) string {
+	if id := u.Query().Get("link_id"); id != "" {
+		return id
+	}
+	if m := regexp.MustCompile(`/link/([^/?]+)`).FindStringSubmatch(u.Path); len(m) > 0 {
+		return m[1]
+	}
+	return ""
+}
+
+func mainlandXHHTruthy(v any) bool {
+	switch value := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return value
+	case string:
+		return value != ""
+	case []any:
+		return len(value) != 0
+	case map[string]any:
+		return len(value) != 0
+	default:
+		return Number(value) != 0
+	}
+}
+
+func mainlandXHHNonce(now int64, randomDecimal string) string {
+	return strings.ToUpper(mainlandMD5(strconv.FormatInt(now, 10) + randomDecimal))
 }
 func mainlandXHHImage(raw string) string {
 	u, e := url.Parse(raw)
@@ -155,9 +211,12 @@ func mainlandXHHSign(path string, t int64, nonce string) string {
 		}
 		return b.String()
 	}
-	mapped := []string{mapping(strconv.FormatInt(t, 10), len(table)-2), mapping("/"+strings.Trim(path, "/")+"/", len(table)), mapping(nonce, len(table))}
+	mapped := []string{mapping(strconv.FormatInt(t, 10), len(table)-2), mapping("/"+strings.Join(strings.FieldsFunc(path, func(r rune) bool { return r == '/' }), "/")+"/", len(table)), mapping(nonce, len(table))}
 	var b strings.Builder
-	for i := 0; b.Len() < 20; i++ {
+	for i := range max(len(mapped[0]), len(mapped[1]), len(mapped[2])) {
+		if b.Len() == 20 {
+			break
+		}
 		for _, s := range mapped {
 			if i < len(s) {
 				b.WriteByte(s[i])
@@ -185,6 +244,7 @@ func mainlandXHHSign(path string, t int64, nonce string) string {
 // Device-profile protocol follows ParseHub's SecuritySm adaptation of
 // https://github.com/YueHen14/skyland-auto-sign/blob/6e7115b5580377c842f50f05b0fa39ab079c17b1/SecuritySm.py.
 func mainlandXHHDevice(ctx context.Context, c *http.Client) (string, error) {
+	ctx = netx.WithoutCookies(ctx)
 	const publicKey = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCXj9exmI4nQjmT52iwr+yf7hAQ06bfSZHTAHUfRBYiagCf/whhd8es0R79wBigpiHLd28TKA8b8mGR8OiiI1hV+qfynCWihvp3mdj8MiiH6SU3lhro2hkfYzImZB0RmWr2zE4Xt1+A6Oyp6bf+W7JSxYUXHw3nNv7Td4jw4jEFKQIDAQAB"
 	keyBytes, e := base64.StdEncoding.DecodeString(publicKey)
 	if e != nil {
@@ -250,17 +310,11 @@ func mainlandXHHDevice(ctx context.Context, c *http.Client) (string, error) {
 			obfuscated[rule[0]] = v
 			continue
 		}
-		block, e := des.NewCipher([]byte(rule[1]))
-		if e != nil {
-			return "", e
+		value, err := mainlandXHHDES(Text(v), rule[1])
+		if err != nil {
+			return "", err
 		}
-		plain := append([]byte(Text(v)), make([]byte, 8)...)
-		plain = plain[:len(plain)/8*8]
-		out := make([]byte, len(plain))
-		for i := 0; i < len(plain); i += 8 {
-			block.Encrypt(out[i:i+8], plain[i:i+8])
-		}
-		obfuscated[rule[0]] = base64.StdEncoding.EncodeToString(out)
+		obfuscated[rule[0]] = value
 	}
 	b, e := json.Marshal(obfuscated)
 	if e != nil {
@@ -295,4 +349,18 @@ func mainlandXHHDevice(ctx context.Context, c *http.Client) (string, error) {
 		return "", fmt.Errorf("数美设备认证拒绝请求: %s", mainlandFirst(Path(response, "message"), Path(response, "msg"), Path(response, "code")))
 	}
 	return "B" + Text(Path(response, "detail", "deviceId")), nil
+}
+
+func mainlandXHHDES(value, key string) (string, error) {
+	block, err := des.NewCipher([]byte(key))
+	if err != nil {
+		return "", err
+	}
+	// SecuritySm's update-only DES emits complete blocks after eight zero bytes.
+	plain := make([]byte, (len(value)+8)/8*8)
+	copy(plain, value)
+	for i := 0; i < len(plain); i += 8 {
+		block.Encrypt(plain[i:i+8], plain[i:i+8])
+	}
+	return base64.StdEncoding.EncodeToString(plain), nil
 }

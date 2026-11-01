@@ -3,9 +3,11 @@
 [![CI and release](https://github.com/IwasakiYouko/Multi-platform-Parse/actions/workflows/ci.yml/badge.svg)](https://github.com/IwasakiYouko/Multi-platform-Parse/actions/workflows/ci.yml)
 [GitHub Releases](https://github.com/IwasakiYouko/Multi-platform-Parse/releases) · [Actions](https://github.com/IwasakiYouko/Multi-platform-Parse/actions) · [第三方声明](THIRD_PARTY_NOTICES.md)
 
-原生 Go 多平台链接解析工具。接收 NapCat 的 OneBot v11 反向 Universal WebSocket 消息，解析分享链接、AV/BV 编号和分享卡片，下载并发送图片、封面或视频。内置中文控制面板，支持平台策略、代理、登录保护和缓存管理。
+Go 主程序的多平台链接解析工具。接收 NapCat 的 OneBot v11 反向 Universal WebSocket 消息，解析分享链接、AV/BV 编号和分享卡片，下载并发送图片、封面或视频。内置中文控制面板，支持平台策略、代理、登录保护和缓存管理。
 
-解析不依赖 Python、ParseHub 服务或 yt-dlp。FFmpeg/ffprobe 负责本地媒体处理；默认方案使用官方自托管 Cap 与 Valkey 提供登录验证码，1.1.0 起也可明确关闭验证码，仅部署 Go 应用。当前发行镜像面向 **Linux amd64**，使用 Docker Engine 的 **host 网络**；不宣称支持 arm64 Cap 镜像或 Windows 原生 host 部署。
+除保持既有实现的哔哩哔哩与抖音外，其余平台以 ParseHub **2.3.15** 为迁移基线。YouTube、Facebook、Snapchat 由 Go 调用固定版本的 yt-dlp/EJS/Deno；其他平台使用 Go 适配器，不需要部署 ParseHub 服务。FFmpeg/ffprobe 负责本地媒体处理；默认使用官方自托管 Cap 与 Valkey 提供登录验证码，也可明确关闭验证码。当前镜像面向 **Linux amd64**，使用 Docker Engine 的 **host 网络**。
+
+**v1.2.0 包含本次解析迁移。已有部署请同时更新应用与 Cap 镜像标签，并保留原数据卷；需要平台登录态时，请在控制面板配置自己的 Cookie。**
 
 ## 快速开始：使用 GitHub Release
 
@@ -15,13 +17,13 @@ Release 提供由 GitHub Actions 构建的应用与 Cap 镜像归档。此安装
 mkdir -p multiparse/certs
 cd multiparse
 
-RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.1.1
-for file in compose.yaml compose.no-cap.yaml multi-platform-parse-v1.1.1-linux-amd64.tar.gz SHA256SUMS; do
+RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.2.0
+for file in compose.yaml compose.no-cap.yaml multi-platform-parse-v1.2.0-linux-amd64.tar.gz SHA256SUMS; do
   curl --fail --location --remote-name "$RELEASE/$file"
 done
 curl --fail --location --output .env.example "$RELEASE/default.env.example"
 sha256sum --check SHA256SUMS
-docker load --input multi-platform-parse-v1.1.1-linux-amd64.tar.gz
+docker load --input multi-platform-parse-v1.2.0-linux-amd64.tar.gz
 cp .env.example .env
 docker compose up -d --wait
 ```
@@ -51,7 +53,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.1}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.2.0}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -92,7 +94,7 @@ services:
     stop_grace_period: 45s
 
   cap:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.1.1}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.2.0}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -155,7 +157,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.1.1}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.2.0}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -202,14 +204,14 @@ volumes:
 mkdir -p multiparse/certs
 cd multiparse
 curl --fail --location --output compose.no-cap.yaml \
-  https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.1.1/compose.no-cap.yaml
+  https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.2.0/compose.no-cap.yaml
 docker compose -f compose.no-cap.yaml up -d --wait
 docker compose -f compose.no-cap.yaml logs app
 ```
 
 `CAP_ENABLED: "false"` 只在首次初始化导入，存为 `security.cap_disabled=true`。`secrets` 卷只保留本地初始化密钥，以便以后恢复默认部署；保留该卷或 `CAP_URL` 配置不会启动或连接 Cap。
 
-**已有部署切换**：先升级至 1.1.1，在面板「登录安全」勾选「关闭 Cap CAPTCHA」并输入当前密码保存，再停止原 Compose（`docker compose down`，不要加 `-v`），使用相同项目名启动本例。仅删除 Cap 容器或修改环境变量，不会覆盖已有配置，也不会让启用验证码的旧实例自动改成密码登录。
+**已有部署切换**：先升级至 1.2.0，在面板「登录安全」勾选「关闭 Cap CAPTCHA」并输入当前密码保存，再停止原 Compose（`docker compose down`，不要加 `-v`），使用相同项目名启动本例。仅删除 Cap 容器或修改环境变量，不会覆盖已有配置，也不会让启用验证码的旧实例自动改成密码登录。
 
 **重新启用验证码**：保留原数据卷，先启动默认三服务 Compose，确认 Cap/Valkey 可用，再在面板取消关闭选项并保存。后端先完成 Cap 初始化与等级校验才提交启用；失败时保留原配置，不假装已经启用保护。使用自定义内部端口时，保持面板 Cap 地址与部署一致。
 
@@ -222,7 +224,7 @@ docker compose -f compose.no-cap.yaml logs app
 写入与 Compose 同目录的 `.env`：
 
 ```dotenv
-IMAGE_TAG=1.1.1
+IMAGE_TAG=1.2.0
 LISTEN_ADDR=::
 START_PORT=10492
 EXTERNAL_URL=
@@ -268,8 +270,8 @@ volumes:
 镜像地址：
 
 ```text
-ghcr.io/iwasakiyouko/multi-platform-parse:1.1.1
-ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.1.1
+ghcr.io/iwasakiyouko/multi-platform-parse:1.2.0
+ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.2.0
 ```
 
 本仓库的两个镜像已公开，可匿名拉取。若自行 fork 后新建 GHCR 包，默认可能为私有，公开源码不会自动公开包；仓库所有者可在 **Package settings → Change visibility → Public** 开放匿名拉取。私有包的授权用户需使用具有 `read:packages` 权限的令牌执行 `docker login ghcr.io`。不要把令牌写入 Compose、README 或提交记录。Release 的环境变量附件使用 `default.env.example` 名称，快速开始命令将其保存为本地 `.env.example` 后校验和使用。
@@ -278,7 +280,7 @@ ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.1.1
 
 ### 从源码启动完整环境
 
-需要 Git、Docker Engine 和 Docker Compose v2；本机运行 Go 检查时需要 Go 1.26 或更新版本、FFmpeg/ffprobe。CI 和 Docker 构建固定 Go 1.27.3。
+需要 Git、Docker Engine 和 Docker Compose v2；本机运行 Go 检查需要 Go 1.27 或更新版本、FFmpeg/ffprobe。CI 和 Docker 构建固定 Go 1.27.3。三个 yt-dlp 平台另需固定的隔离 Python 运行时与 Deno，镜像会自动安装；不需要安装 Python 机器人或 ParseHub。
 
 ```bash
 git clone https://github.com/IwasakiYouko/Multi-platform-Parse.git
@@ -288,6 +290,22 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --build --wait
 ```
 
 `compose.yaml` 是仅镜像部署配置，`compose.build.yaml` 才添加本地构建目标。修改源码后使用同一条带 `--build` 的命令重新构建，不要误以为仅执行默认 Compose 就会使用工作区代码。
+
+本机需要执行这三个平台的实际后端验证时，使用 CPython 3.11–3.14 的 Linux amd64 环境，在临时目录安装同版本工具。安装器会核对锁定附件的大小和 SHA-256，不修改系统 Python：
+
+```bash
+TOOLS_DIR="$(mktemp -d)"
+python3 -m venv "$TOOLS_DIR/installer"
+"$TOOLS_DIR/installer/bin/python" scripts/install_ytdlp_runtime.py \
+  --venv "$TOOLS_DIR/yt-dlp" \
+  --deno "$TOOLS_DIR/deno" \
+  --docs "$TOOLS_DIR/licenses"
+export YTDLP_PYTHON="$TOOLS_DIR/yt-dlp/bin/python"
+export YTDLP_JS_RUNTIME="$TOOLS_DIR/deno"
+"$YTDLP_PYTHON" -I scripts/check_ytdlp_runtime.py
+```
+
+锁定版本为 yt-dlp `2026.10.26.220202.dev0`、EJS `0.8.0`、Deno `2.9.8`，附件和默认依赖见 `scripts/ytdlp-runtime.lock.json`。运行服务时不会自动下载或升级这些工具；缺少运行时会明确报错，不返回伪造的解析结果。
 
 ```bash
 go test -race ./...
@@ -373,11 +391,12 @@ console.log(tasks.find(task => task.id === id));
 - `internal/parser`：`Resolver`、`Register` 和现有原生适配器；新平台沿用 `context.Context`、受控 `http.Client` 和结构化媒体结果。
 - `internal/netx`：代理选择、公网 IP 校验、DNS 和重定向约束。不要另建不受策略控制的下载客户端。
 - `internal/media`：下载、FFmpeg/ffprobe、音轨合并和处理产物。
+- `internal/extractor`：三个 yt-dlp 平台的元数据、保留下载上下文、隔离进程与受控网络网关；不得把作品网页当成视频文件下载。
 - `internal/jobs`：策略、队列、并发、缓存租约、发送和清理。
 - `internal/onebot`：反向 WebSocket、事件提取、API 调用与消息段。
 - `internal/web`、`internal/ui`：认证、管理 API、内置前端和官方 Cap 资源。
 
-新增适配器需要同时维护平台目录、注册入口、旧配置处理与确定性的行为回归。只取得标题不等于成功取得视频；不要执行平台页面中的任意 JavaScript，也不要把页面 URL 直接交给 FFmpeg 联网。已有测试采用受控响应验证链接边界、访问策略、媒体选择、过期与并发；实网验证应单独运行，不能要求 CI 持有真实平台账号。
+新增适配器需要同时维护平台目录、注册入口、配置、媒体类型和确定性的行为回归。只取得标题不等于成功取得视频。原生 HTML 适配器不执行网页 JavaScript；播放器挑战仅由固定 EJS/Deno 受限执行，不启用远程组件或用户插件。FFmpeg 只处理已经下载的本地文件，不直接访问来源 URL。实网验证应单独运行，不能要求 CI 持有真实平台账号。
 
 ## NapCat 接入与消息示例
 
@@ -397,7 +416,7 @@ console.log(tasks.find(task => task.id === id));
 
 ## 平台、策略与代理
 
-当前注册 24 个原生适配器：Bilibili、抖音、TikTok、小红书、微博、快手、Twitter/X、Instagram、YouTube、Facebook、Threads、贴吧、微信公众号、微信视频号、酷安、皮皮虾、最右、小黑盒、Snapchat、知乎、豆瓣、Bangumi、今日头条、Medium。准确的平台 ID、域名和内容类型见 `GET /api/platforms` 与 `internal/model/model.go`。
+当前注册 24 个平台：Bilibili、抖音、TikTok、小红书、微博、快手、Twitter/X、Instagram、YouTube、Facebook、Threads、贴吧、微信公众号、微信视频号、酷安、皮皮虾、最右、小黑盒、Snapchat、知乎、豆瓣、Bangumi、今日头条、Medium。其中 YouTube、Facebook、Snapchat 使用 yt-dlp 后端，其余使用 Go 适配器。准确的平台 ID、域名和内容类型见 `GET /api/platforms` 与 `internal/model/model.go`。
 
 平台可独立开启、关闭。平台级 NSFW 拒绝独立保存，批量开启平台不会取消它；这不是 AI 逐条审核。支持自定义全局/平台拒绝文案、`{platform}` / `{reason}` 占位符或静默拒绝。平台关闭、NSFW 拒绝和会话权限任一不通过即拒绝；缓存读取及发送前仍重查策略。已提交给 NapCat 的消息无法保证拦截或撤回。群白名单非空时优先使用白名单，否则应用黑名单；可单独关闭私聊或全局自动解析。
 
@@ -410,6 +429,12 @@ console.log(tasks.find(task => task.id === id));
 在面板配置 HTTP/HTTPS 类型的 HTTP 代理或 SOCKS5，支持认证。平台归属可调整，依据平台而非 CDN 地理位置；抖音和 TikTok 分开分类。解析、短链、封面、视频和音轨沿用一致出口。直连不继承 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`；指定代理失败不回退直连。代理模式经代理访问固定 IP 的 Cloudflare DoH，验证公网地址后再连接目标，因此代理必须能访问该 DNS 服务。来源链接和重定向不能访问宿主机内网或云元数据。
 
 平台可能要求有效 Cookie、区域访问或授权。小红书分享参数不能随意删除；知乎可能需要含 `d_c0` 的 Cookie；视频号依赖元宝授权 Cookie，该 Cookie 仅发往元宝域名。DRM、付费墙、私密内容和平台风控不通过伪造成功或权限绕过处理。
+
+迁移保留了平台专属的链接清理、签名、回退、动图和文章结构。`markdown_content` 保存富文本语义，`content` 保存纯文本；LivePhoto 使用一个 `livephoto` 媒体对象关联图片 URL 与 `video_url`，不会在解析阶段丢失配对。OneBot 仍先发图片与文案并等待成功回执，再发伴随视频；实际 GIF 作为图片发送，MP4 动画作为视频发送，文案沿用既有显示长度限制。
+
+新实现不会复制参考仓库内置的共享登录 Cookie。需要登录的平台应配置自己的有效凭据。迁移平台使用独立缓存版本，避免旧解析结果掩盖切换；哔哩哔哩、抖音沿用原缓存键和解析路径。
+
+yt-dlp 的网络访问经过每次调用独立的认证回环网关，沿用同一平台代理、公网 IP 校验与目标策略；隔离启动器拒绝直接外连、任意子进程和联网 FFmpeg。超时、文件与 CPU 限制之外，工作目录大小及 RSS 使用采样检查，并非完整操作系统沙箱。Medium 的 Chrome 150 TLS/HTTP2 指纹请求同样通过受控网关，不等同于仅修改 User-Agent。
 
 ## 缓存、安全与运维
 
@@ -437,7 +462,7 @@ unset PASSWORD
 
 工作流定义：[`ci.yml`](.github/workflows/ci.yml)。
 
-- PR 到 `main` 或推送 `main`：安装 FFmpeg，运行全量竞态测试、`go vet`、编译、许可证收集、发布工具测试和两种 Compose 校验；不发布镜像。
+- PR 到 `main` 或推送 `main`：安装 FFmpeg 和固定提取运行时，运行离线 EJS 检查、全量竞态测试、`go vet`、编译、许可证收集、发布工具测试、两种 Compose 校验及 Debian 非 root 镜像运行检查；不发布镜像。
 - 推送 `vMAJOR.MINOR.PATCH`：检查成功后构建镜像、收集对应 Debian 源码，再推送去掉 `v` 的版本标签、`latest` 和 `sha-<完整提交SHA>`；最后创建公开 GitHub Release。
 - Release 附镜像归档、Compose、环境变量示例、校验和、准确的 Debian 软件包清单及对应源码分卷；每次镜像发布均有同版本源码材料，不以旧版材料代替新版。
 - 仅使用仓库的 `GITHUB_TOKEN`。包写权限只给镜像作业，Release 写权限只给发布作业；第三方 Actions 固定到提交 SHA。
@@ -445,8 +470,8 @@ unset PASSWORD
 维护者发布示例：
 
 ```bash
-git tag v1.1.1
-git push origin v1.1.1
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 版本标签须与 `cmd/multiparse/main.go` 中的应用版本同步；新发行版应同时更新仓库默认 `IMAGE_TAG` 和文档示例。不要覆盖已发布版本来代替新版本发布。
@@ -461,10 +486,10 @@ git push origin v1.1.1
 
 ```bash
 sha256sum --check DEBIAN-SOURCES-SHA256SUMS
-cat multi-platform-parse-v1.1.1-debian-sources.tar.gz.part* | tar -xz
+cat multi-platform-parse-v1.2.0-debian-sources.tar.gz.part* | tar -xz
 ```
 
-源码取自 Debian Snapshot 的准确源包版本，下载时核对大小、Snapshot 哈希和 Debian 描述文件的 SHA-256。Python 仅用于 CI/发布工具，不是解析服务或运行镜像的依赖。上述材料记录实际分发输入，不构成对镜像所有组件的法律保证。
+Debian 源码取自 Snapshot 的准确源包版本，下载时核对大小、Snapshot 哈希和 Debian 描述文件的 SHA-256。应用镜像还在 `/usr/local/share/doc/multiparse/ytdlp-runtime/` 附带 Python 包清单、许可证、Mutagen 对应源码及 Deno 第三方许可材料。Deno 清单是锁定依赖的保守集合，不是精确链接二进制 SBOM。上述材料不构成对镜像所有组件的法律保证。
 
 ## 许可与引用
 
@@ -474,7 +499,9 @@ cat multi-platform-parse-v1.1.1-debian-sources.tar.gz.part* | tar -xz
 2. [z-mio/ParseHub](https://github.com/z-mio/ParseHub) 与 [参考克隆 parse_hub_bot](https://github.com/IwasakiYouko/parse_hub_bot)：原生解析适配器部分逻辑移植来源，保留 MIT 版权与许可声明。
 3. [OneBot v11 标准](https://11.onebot.dev/) 与 [NapCatQQ](https://github.com/NapNeko/NapCatQQ)：反向 WebSocket、事件和消息段协议参考。
 4. [Cap](https://github.com/tiagorangel1/cap) 与 [Cap 文档](https://capjs.js.org/)：官方自托管验证码、插桩及内置浏览器资源。
-5. [kkdai/youtube](https://github.com/kkdai/youtube)、[goquery](https://github.com/PuerkitoBio/goquery)、[Gorilla WebSocket](https://github.com/gorilla/websocket)、[modernc SQLite](https://pkg.go.dev/modernc.org/sqlite)：Go 依赖，精确版本见 `go.mod` / `go.sum`。
+5. [goquery](https://github.com/PuerkitoBio/goquery)、[Gorilla WebSocket](https://github.com/gorilla/websocket)、[modernc SQLite](https://pkg.go.dev/modernc.org/sqlite)、[html-to-markdown](https://github.com/JohannesKaufmann/html-to-markdown)、[tls-client](https://github.com/bogdanfinn/tls-client)：Go 依赖，精确版本见 `go.mod` / `go.sum`。
 6. [FFmpeg](https://ffmpeg.org/legal.html)、[Debian 软件包源代码](https://sources.debian.org/)、[Valkey](https://valkey.io/)：媒体与系统运行时及相关许可。
 7. [Docker Compose 文档](https://docs.docker.com/compose/) 与 [GitHub 包权限和可见性说明](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)：部署、镜像访问与发布流程参考。
 8. [SecuritySm 上游及 MIT 许可](https://github.com/YueHen14/skyland-auto-sign/tree/6e7115b5580377c842f50f05b0fa39ab079c17b1)：小黑盒设备配置相关适配的上游来源，保留 `Copyright (c) 2023 xxyz30` 与许可全文。
+9. [yt-dlp](https://github.com/yt-dlp/yt-dlp)、[yt-dlp-ejs](https://github.com/yt-dlp/ejs)、[Deno](https://github.com/denoland/deno)：三个平台的固定提取与 JavaScript 运行时；分发版本、哈希和来源见运行时锁文件。
+10. [xhshow](https://github.com/cloxl/xhshow)：小红书激活签名的 Go 移植来源，固定参考 `0.2.0`，保留 `Copyright (c) 2024 Cloxl` 与 MIT 许可。

@@ -89,7 +89,7 @@ func (s *Service) MediaHandler() http.Handler {
 		candidate := filepath.Join(s.media.Root(), entry.Key, filepath.FromSlash(parts[1]))
 		allowed := false
 		for _, f := range entry.Files {
-			if candidate == f.Path || (f.ThumbPath != "" && candidate == f.ThumbPath) {
+			if candidate == f.Path || (f.ThumbPath != "" && candidate == f.ThumbPath) || (f.VideoPath != "" && candidate == f.VideoPath) {
 				allowed = true
 				break
 			}

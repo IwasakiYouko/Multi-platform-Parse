@@ -235,8 +235,7 @@ func (s *Service) execute(w work) {
 	w.task.Status = "running"
 	w.task.UpdatedAt = time.Now().UTC()
 	_ = s.st.PutTask(w.task)
-	hash := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|quality=%d|bytes=%d|download=%t", w.task.Platform, w.task.URL, w.config.Media.Quality, w.config.Media.MaxBytes, w.config.Media.AutoDownload)))
-	key := hex.EncodeToString(hash[:])
+	key := parserCacheKey(w.task.Platform, w.task.URL, w.config)
 	w.task.CacheKey = key
 	entry, release, err := s.acquire(ctx, w.config, w.task.URL, key)
 	if err == nil {
@@ -271,6 +270,15 @@ func (s *Service) execute(w work) {
 	s.finish(&w.task, "completed", "")
 	succeeded = true
 }
+func parserCacheKey(platform, raw string, cfg model.Config) string {
+	input := fmt.Sprintf("%s|%s|quality=%d|bytes=%d|download=%t", platform, raw, cfg.Media.Quality, cfg.Media.MaxBytes, cfg.Media.AutoDownload)
+	if platform != "bilibili" && platform != "douyin" {
+		input += "|parser=parsehub-2.3.15"
+	}
+	hash := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(hash[:])
+}
+
 func (s *Service) acquire(ctx context.Context, cfg model.Config, raw, key string) (*model.CacheEntry, func(), error) {
 	for {
 		s.cacheMu.Lock()
@@ -367,6 +375,11 @@ func (s *Service) filesExist(e *model.CacheEntry) bool {
 	for _, f := range e.Files {
 		if _, err := os.Stat(f.Path); err != nil {
 			return false
+		}
+		if f.VideoPath != "" {
+			if _, err := os.Stat(f.VideoPath); err != nil {
+				return false
+			}
 		}
 		if f.ThumbPath != "" {
 			if _, err := os.Stat(f.ThumbPath); err != nil {
@@ -528,7 +541,7 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 		}
 	}
 	for _, f := range e.Files {
-		if f.Kind == "image" && !(f.Size > cfg.Media.MaxBytes && cfg.Media.OversizeMode == "file") {
+		if (f.Kind == "image" || f.Kind == "gif" || f.Kind == "livephoto") && !(f.Size > cfg.Media.MaxBytes && cfg.Media.OversizeMode == "file") {
 			addImage(f.Path)
 		}
 		if cfg.Media.ShowCover && f.Kind == "video" && f.ThumbPath != "" {
@@ -543,8 +556,12 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 		if r.Author != "" {
 			fmt.Fprintf(&b, "作者：%s\n", truncate(r.Author, 100))
 		}
-		if r.Content != "" {
-			fmt.Fprintln(&b, truncate(r.Content, 1800))
+		content := r.Content
+		if r.MarkdownContent != "" {
+			content = r.MarkdownContent
+		}
+		if content != "" {
+			fmt.Fprintln(&b, truncate(content, 1800))
 		}
 		fmt.Fprintf(&b, "链接：%s", r.SourceURL)
 		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": b.String()}})
@@ -561,42 +578,69 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 		}
 	}
 	video := 0
+	companions := make(map[string]bool)
 	for _, f := range e.Files {
-		if f.Kind == "image" && !(f.Size > cfg.Media.MaxBytes && cfg.Media.OversizeMode == "file") {
-			continue
+		if f.Kind == "livephoto" {
+			companions[filepath.Clean(f.Path)] = true
+		}
+		if f.Kind == "livephoto" && f.VideoPath != "" {
+			companions[filepath.Clean(f.VideoPath)] = true
+		}
+	}
+	sentMedia := make(map[string]bool)
+	send := func(kind, path, thumb string, size int64) error {
+		pathKey := filepath.Clean(path)
+		if (kind == "video" || kind == "image") && companions[pathKey] && sentMedia[pathKey] {
+			return nil
 		}
 		if err := check(); err != nil {
 			return err
 		}
-		location := s.mediaLocation(e, f.Path, target)
-		if f.Kind == "file" || (f.Size > s.st.Config().Media.MaxBytes && s.st.Config().Media.OversizeMode == "file") {
-			if err := s.sender.UploadFile(ctx, target, location, filepath.Base(f.Path)); err != nil {
+		location := s.mediaLocation(e, path, target)
+		current := s.st.Config()
+		if kind == "file" || (size > current.Media.MaxBytes && current.Media.OversizeMode == "file") {
+			if err := s.sender.UploadFile(ctx, target, location, filepath.Base(path)); err != nil {
 				return err
 			}
-			continue
-		}
-		kind := f.Kind
-		if kind == "audio" {
-			if err := s.sender.UploadFile(ctx, target, location, filepath.Base(f.Path)); err != nil {
-				return err
+		} else if kind == "audio" {
+			return s.sender.UploadFile(ctx, target, location, filepath.Base(path))
+		} else {
+			if kind != "video" && kind != "image" {
+				return errors.New("无法发送未知媒体类型")
 			}
-			continue
-		}
-		if kind != "video" && kind != "image" {
-			return errors.New("无法发送未知媒体类型")
-		}
-		data := map[string]any{"file": location}
-		if kind == "video" {
-			video++
-			if f.ThumbPath != "" {
-				data["thumb"] = s.mediaLocation(e, f.ThumbPath, target)
-			}
-		}
-		if err := s.sender.Send(ctx, target, []model.Segment{{Type: kind, Data: data}}); err != nil {
+			data := map[string]any{"file": location}
 			if kind == "video" {
-				return fmt.Errorf("发送视频 %d 失败: %w", video, err)
+				video++
+				if thumb != "" {
+					data["thumb"] = s.mediaLocation(e, thumb, target)
+				}
 			}
-			return err
+			if err := s.sender.Send(ctx, target, []model.Segment{{Type: kind, Data: data}}); err != nil {
+				if kind == "video" {
+					return fmt.Errorf("发送视频 %d 失败: %w", video, err)
+				}
+				return err
+			}
+		}
+		if companions[pathKey] && (kind == "video" || kind == "image") {
+			sentMedia[pathKey] = true
+		}
+		return nil
+	}
+	for _, f := range e.Files {
+		kind := f.Kind
+		if kind == "gif" || kind == "livephoto" {
+			kind = "image"
+		}
+		if kind != "image" || (f.Size > cfg.Media.MaxBytes && cfg.Media.OversizeMode == "file") {
+			if err := send(kind, f.Path, f.ThumbPath, f.Size); err != nil {
+				return err
+			}
+		}
+		if f.Kind == "livephoto" && f.VideoPath != "" {
+			if err := send("video", f.VideoPath, f.ThumbPath, f.VideoSize); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

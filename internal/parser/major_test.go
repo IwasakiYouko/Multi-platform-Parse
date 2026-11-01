@@ -94,7 +94,7 @@ func TestMajorXHSLivePhoto(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Media) != 2 || r.Media[0].Kind != "image" || r.Media[1].Kind != "video" || r.Type != "multimedia" {
+	if len(r.Media) != 1 || r.Media[0].Kind != "livephoto" || r.Media[0].URL == "" || r.Media[0].VideoURL != "https://sns-video.example/live.mp4" || r.Type != "image" {
 		t.Fatalf("live image/video pair lost: %#v", r)
 	}
 	if err = majorXHSLocation("https://www.xiaohongshu.com/login?redirect=x"); err == nil {

@@ -254,6 +254,9 @@ func (p *preparation) ffmpeg(ctx context.Context, args []string, extension strin
 
 func (p *preparation) prepareItem(ctx context.Context, item model.Media, headers map[string]string) (model.Artifact, error) {
 	var empty model.Artifact
+	if item.Kind == "livephoto" {
+		return p.prepareLivePhoto(ctx, item, headers)
+	}
 	if item.URL == "" {
 		return empty, errors.New("媒体缺少下载地址")
 	}
@@ -275,6 +278,26 @@ func (p *preparation) prepareItem(ctx context.Context, item model.Media, headers
 	if err != nil {
 		return empty, err
 	}
+	return p.prepareDownloaded(ctx, item, input, finalURL, headers, true)
+}
+
+// prepareLocal accepts only staged media, never a source URL or a remote companion.
+func (p *preparation) prepareLocal(ctx context.Context, item model.Media, input string, headers map[string]string) (model.Artifact, error) {
+	if err := p.validateLocal(input); err != nil {
+		return model.Artifact{}, err
+	}
+	if item.AudioURL != "" || item.VideoURL != "" || item.Kind == "livephoto" {
+		return model.Artifact{}, errors.New("本地提取媒体不能引用远程伴随媒体")
+	}
+	return p.prepareDownloaded(ctx, item, input, "", headers, false)
+}
+
+func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, input, finalURL string, headers map[string]string, remote bool) (model.Artifact, error) {
+	var empty model.Artifact
+	var err error
+	if err = ctx.Err(); err != nil {
+		return empty, err
+	}
 	sniff := make([]byte, 512)
 	file, err := os.Open(input)
 	if err != nil {
@@ -285,6 +308,9 @@ func (p *preparation) prepareItem(ctx context.Context, item model.Media, headers
 	sniff = sniff[:n]
 	hls := bytes.HasPrefix(bytes.TrimSpace(sniff), []byte("#EXTM3U"))
 	if hls {
+		if !remote {
+			return empty, errors.New("提取器必须返回已下载媒体，不能返回播放列表")
+		}
 		input, err = p.localizeHLS(ctx, input, finalURL, headers, 0)
 		if err != nil {
 			return empty, err
@@ -306,7 +332,7 @@ func (p *preparation) prepareItem(ctx context.Context, item model.Media, headers
 	if video == nil && audio == nil {
 		return empty, errors.New("下载内容不含音视频")
 	}
-	if (item.Kind == "image" || item.Kind == "gif") && !hls {
+	if item.Kind == "image" && !hls {
 		if video == nil || audio != nil {
 			return empty, errors.New("图片地址实际返回非图片媒体")
 		}
@@ -459,6 +485,9 @@ func (p *preparation) prepareItem(ctx context.Context, item model.Media, headers
 	stat, err := os.Stat(output)
 	if err != nil {
 		return empty, err
+	}
+	if stat.Size() <= 0 || stat.Size() > p.hardLimit() {
+		return empty, errors.New("输出媒体大小超过安全限制")
 	}
 	kind := "audio"
 	width, height := 0, 0

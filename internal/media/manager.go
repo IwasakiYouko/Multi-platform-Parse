@@ -24,6 +24,12 @@ import (
 const maxNativeBytes int64 = 4 << 30
 const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+var (
+	errInvalidReservation = errors.New("无效磁盘预留")
+	errMediaDiskLimit = errors.New("媒体缓存达到磁盘上限，请清理缓存或提高磁盘限制")
+	errMediaAccountingOverflow = errors.New("媒体磁盘计数溢出")
+)
+
 type Manager struct {
 	root       string
 	mu         sync.Mutex
@@ -183,16 +189,16 @@ func (m *Manager) acquire(ctx context.Context, transcode bool, limit int) (func(
 }
 func (p *preparation) claim(n int64) error {
 	if n < 0 {
-		return errors.New("无效磁盘预留")
+		return errInvalidReservation
 	}
 	m := p.manager
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.used > p.cfg.Media.MaxDiskBytes || n > p.cfg.Media.MaxDiskBytes-m.used {
-		return errors.New("媒体缓存达到磁盘上限，请清理缓存或提高磁盘限制")
+		return errMediaDiskLimit
 	}
 	if p.bytes > math.MaxInt64-n {
-		return errors.New("媒体磁盘计数溢出")
+		return errMediaAccountingOverflow
 	}
 	m.used += n
 	p.bytes += n
@@ -239,7 +245,7 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 	if cfg.Media.MaxBytes < 1024 || cfg.Media.MaxBytes > maxNativeBytes || cfg.Media.MaxDiskBytes < cfg.Media.MaxBytes || cfg.Media.MaxImages < 1 || cfg.Media.MaxImages > 200 || cfg.Media.MaxDurationSeconds < 1 || cfg.Media.MaxDurationSeconds > 86400 || cfg.Media.Concurrency < 1 || cfg.Media.Concurrency > 16 || cfg.Media.TranscodeConcurrency < 1 || cfg.Media.TranscodeConcurrency > 4 || (cfg.Media.OversizeMode != "file" && cfg.Media.OversizeMode != "link") {
 		return nil, errors.New("无效媒体资源限制")
 	}
-	if len(result.Media) == 0 {
+	if len(result.Media) == 0 && result.Extraction == nil {
 		return nil, nil
 	}
 	if len(result.Media) > cfg.Media.MaxImages+16 {
@@ -247,7 +253,7 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 	}
 	images := 0
 	for _, item := range result.Media {
-		if item.Kind == "image" || item.Kind == "gif" {
+		if item.Kind == "image" || item.Kind == "gif" || item.Kind == "livephoto" {
 			images++
 		}
 		if item.Duration > float64(cfg.Media.MaxDurationSeconds) {
@@ -293,28 +299,27 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 		}
 	}()
 	artifacts := make([]model.Artifact, 0, len(result.Media))
-	for _, item := range result.Media {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	if result.Extraction != nil {
+		artifacts, err = p.prepareExtraction(ctx, result)
+		if err != nil {
+			return nil, err
 		}
-		headers := make(map[string]string, len(result.Headers)+len(item.Headers)+2)
-		headers["User-Agent"] = userAgent
-		headers["Referer"] = result.SourceURL
-		for k, v := range result.Headers {
-			headers[http.CanonicalHeaderKey(k)] = v
+	} else {
+		for _, item := range result.Media {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			headers := mediaHeaders(result, item)
+			a, prepareErr := p.prepareItem(ctx, item, headers)
+			if prepareErr != nil {
+				return nil, prepareErr
+			}
+			artifacts = append(artifacts, a)
 		}
-		for k, v := range item.Headers {
-			headers[http.CanonicalHeaderKey(k)] = v
-		}
-		a, prepareErr := p.prepareItem(ctx, item, headers)
-		if prepareErr != nil {
-			return nil, prepareErr
-		}
-		artifacts = append(artifacts, a)
 	}
 	actualImages := 0
 	for _, a := range artifacts {
-		if a.Kind == "image" || (a.Kind == "file" && a.Width > 0 && a.ThumbPath == "") {
+		if a.Kind == "image" || a.Kind == "gif" || a.Kind == "livephoto" || (a.Kind == "file" && a.Width > 0 && a.ThumbPath == "") {
 			actualImages++
 		}
 	}
@@ -324,9 +329,12 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	keep := make(map[string]bool, len(artifacts)*2)
+	keep := make(map[string]bool, len(artifacts)*3)
 	for _, a := range artifacts {
 		keep[a.Path] = true
+		if a.VideoPath != "" {
+			keep[a.VideoPath] = true
+		}
 		if a.ThumbPath != "" {
 			keep[a.ThumbPath] = true
 		}
@@ -360,6 +368,9 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 	published = true
 	for i := range artifacts {
 		artifacts[i].Path = filepath.Join(destination, filepath.Base(artifacts[i].Path))
+		if artifacts[i].VideoPath != "" {
+			artifacts[i].VideoPath = filepath.Join(destination, filepath.Base(artifacts[i].VideoPath))
+		}
 		if artifacts[i].ThumbPath != "" {
 			artifacts[i].ThumbPath = filepath.Join(destination, filepath.Base(artifacts[i].ThumbPath))
 		}
