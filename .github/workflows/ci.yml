@@ -183,7 +183,7 @@ jobs:
           cat >> "$RUNNER_TEMP/release-notes" <<'NOTES'
           Linux amd64 images for the Go application and its official Cap-based launcher. YouTube, Facebook, and Snapchat use the bundled, pinned yt-dlp/EJS/Deno runtime; other platforms use Go adapters.
 
-          Platform migration follows ParseHub 2.3.15 and leaves the existing Bilibili and Douyin parsers unchanged. Use your own platform credentials where login is required; embedded shared upstream cookies are not distributed. See CHANGELOG.md for version-specific changes.
+          Platform migration follows ParseHub 2.3.15 (including Douyin mobile fallback) and leaves the existing Bilibili parser unchanged. Use your own platform credentials where login is required; embedded shared upstream cookies are not distributed. See CHANGELOG.md for version-specific changes.
 
           GHCR packages can initially be private. Public installation does not require GHCR access for these two images: download the gzip archive, SHA256SUMS, compose.yaml, compose.no-cap.yaml, and default.env.example from this Release. Save default.env.example locally as .env.example before verifying with `sha256sum -c SHA256SUMS`, then load the archive with the command above. Both versioned image tags match the supplied Compose defaults.
 

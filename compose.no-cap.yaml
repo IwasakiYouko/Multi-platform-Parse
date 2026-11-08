@@ -2,7 +2,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.2.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.2.1}
     network_mode: host
     restart: unless-stopped
     init: true

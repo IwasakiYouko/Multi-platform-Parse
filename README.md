@@ -7,7 +7,7 @@ Go 主程序的多平台链接解析工具。接收 NapCat 的 OneBot v11 反向
 
 除保持既有实现的哔哩哔哩外，其余平台（含抖音移动端设备池与日常回退）以 ParseHub **2.3.15** 为迁移基线。YouTube、Facebook、Snapchat 由 Go 调用固定版本的 yt-dlp/EJS/Deno；其他平台使用 Go 适配器，不需要部署 ParseHub 服务。FFmpeg/ffprobe 负责本地媒体处理；默认使用官方自托管 Cap 与 Valkey 提供登录验证码，也可明确关闭验证码。当前镜像面向 **Linux amd64**，使用 Docker Engine 的 **host 网络**。
 
-**v1.2.0 包含本次解析迁移。已有部署请同时更新应用与 Cap 镜像标签，并保留原数据卷；需要平台登录态时，请在控制面板配置自己的 Cookie。**
+**v1.2.1 包含本次抖音移动端协议补齐与解析迁移。已有部署请同时更新应用与 Cap 镜像标签，并保留原数据卷；需要平台登录态时，请在控制面板配置自己的 Cookie。**
 
 ## 快速开始：使用 GitHub Release
 
@@ -17,13 +17,13 @@ Release 提供由 GitHub Actions 构建的应用与 Cap 镜像归档。此安装
 mkdir -p multiparse/certs
 cd multiparse
 
-RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.2.0
-for file in compose.yaml compose.no-cap.yaml multi-platform-parse-v1.2.0-linux-amd64.tar.gz SHA256SUMS; do
+RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.2.1
+for file in compose.yaml compose.no-cap.yaml multi-platform-parse-v1.2.1-linux-amd64.tar.gz SHA256SUMS; do
   curl --fail --location --remote-name "$RELEASE/$file"
 done
 curl --fail --location --output .env.example "$RELEASE/default.env.example"
 sha256sum --check SHA256SUMS
-docker load --input multi-platform-parse-v1.2.0-linux-amd64.tar.gz
+docker load --input multi-platform-parse-v1.2.1-linux-amd64.tar.gz
 cp .env.example .env
 docker compose up -d --wait
 ```
@@ -53,7 +53,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.2.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.2.1}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -94,7 +94,7 @@ services:
     stop_grace_period: 45s
 
   cap:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.2.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse-cap:${IMAGE_TAG:-1.2.1}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -157,7 +157,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.2.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-1.2.1}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -204,14 +204,14 @@ volumes:
 mkdir -p multiparse/certs
 cd multiparse
 curl --fail --location --output compose.no-cap.yaml \
-  https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.2.0/compose.no-cap.yaml
+  https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v1.2.1/compose.no-cap.yaml
 docker compose -f compose.no-cap.yaml up -d --wait
 docker compose -f compose.no-cap.yaml logs app
 ```
 
 `CAP_ENABLED: "false"` 只在首次初始化导入，存为 `security.cap_disabled=true`。`secrets` 卷只保留本地初始化密钥，以便以后恢复默认部署；保留该卷或 `CAP_URL` 配置不会启动或连接 Cap。
 
-**已有部署切换**：先升级至 1.2.0，在面板「登录安全」勾选「关闭 Cap CAPTCHA」并输入当前密码保存，再停止原 Compose（`docker compose down`，不要加 `-v`），使用相同项目名启动本例。仅删除 Cap 容器或修改环境变量，不会覆盖已有配置，也不会让启用验证码的旧实例自动改成密码登录。
+**已有部署切换**：先升级至 1.2.1，在面板「登录安全」勾选「关闭 Cap CAPTCHA」并输入当前密码保存，再停止原 Compose（`docker compose down`，不要加 `-v`），使用相同项目名启动本例。仅删除 Cap 容器或修改环境变量，不会覆盖已有配置，也不会让启用验证码的旧实例自动改成密码登录。
 
 **重新启用验证码**：保留原数据卷，先启动默认三服务 Compose，确认 Cap/Valkey 可用，再在面板取消关闭选项并保存。后端先完成 Cap 初始化与等级校验才提交启用；失败时保留原配置，不假装已经启用保护。使用自定义内部端口时，保持面板 Cap 地址与部署一致。
 
@@ -224,7 +224,7 @@ docker compose -f compose.no-cap.yaml logs app
 写入与 Compose 同目录的 `.env`：
 
 ```dotenv
-IMAGE_TAG=1.2.0
+IMAGE_TAG=1.2.1
 LISTEN_ADDR=::
 START_PORT=10492
 EXTERNAL_URL=
@@ -270,8 +270,8 @@ volumes:
 镜像地址：
 
 ```text
-ghcr.io/iwasakiyouko/multi-platform-parse:1.2.0
-ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.2.0
+ghcr.io/iwasakiyouko/multi-platform-parse:1.2.1
+ghcr.io/iwasakiyouko/multi-platform-parse-cap:1.2.1
 ```
 
 本仓库的两个镜像已公开，可匿名拉取。若自行 fork 后新建 GHCR 包，默认可能为私有，公开源码不会自动公开包；仓库所有者可在 **Package settings → Change visibility → Public** 开放匿名拉取。私有包的授权用户需使用具有 `read:packages` 权限的令牌执行 `docker login ghcr.io`。不要把令牌写入 Compose、README 或提交记录。Release 的环境变量附件使用 `default.env.example` 名称，快速开始命令将其保存为本地 `.env.example` 后校验和使用。
@@ -470,8 +470,8 @@ unset PASSWORD
 维护者发布示例：
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
 版本标签须与 `cmd/multiparse/main.go` 中的应用版本同步；新发行版应同时更新仓库默认 `IMAGE_TAG` 和文档示例。不要覆盖已发布版本来代替新版本发布。
@@ -486,7 +486,7 @@ git push origin v1.2.0
 
 ```bash
 sha256sum --check DEBIAN-SOURCES-SHA256SUMS
-cat multi-platform-parse-v1.2.0-debian-sources.tar.gz.part* | tar -xz
+cat multi-platform-parse-v1.2.1-debian-sources.tar.gz.part* | tar -xz
 ```
 
 Debian 源码取自 Snapshot 的准确源包版本，下载时核对大小、Snapshot 哈希和 Debian 描述文件的 SHA-256。应用镜像还在 `/usr/local/share/doc/multiparse/ytdlp-runtime/` 附带 Python 包清单、许可证、Mutagen 对应源码及 Deno 第三方许可材料。Deno 清单是锁定依赖的保守集合，不是精确链接二进制 SBOM。上述材料不构成对镜像所有组件的法律保证。

@@ -1,6 +1,6 @@
 # 变更记录
 
-## Unreleased
+## 1.2.1
 
 - 补齐抖音移动端 App 协议签名（`X-Gorgon` / `X-Khronos` / `X-Ladon` / `X-Argus`）、虚拟 Android 设备池自动注册与日常（Story）高清直链探测，修复无 Cookie 或网页端 `aweme/detail` 返回 HTTP 403 时的解析失败，并修正网页端签名参数顺序；保留哔哩哔哩既有解析逻辑与小红书无水印原图解析。
 
