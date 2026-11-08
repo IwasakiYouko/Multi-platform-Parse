@@ -1,7 +1,9 @@
 package parser
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -225,5 +227,126 @@ func TestMajorURLBoundsNesting(t *testing.T) {
 	}
 	if got := majorURL(nested); got != "" {
 		t.Fatalf("over-deep state produced URL: %q", got)
+	}
+}
+
+// TestMajorDouyinMobileSignVectorsAndFallback403 verifies SignerPy cryptographic vectors, varint boundaries, body-bound stubs, and Web 403 -> Mobile Story fallback.
+func TestMajorDouyinMobileSignVectorsAndFallback403(t *testing.T) {
+	for _, tc := range []struct {
+		val  uint64
+		want []byte
+	}{
+		{127, []byte{0x7F}},
+		{128, []byte{0x80, 0x01}},
+		{128 << 7, []byte{0x80, 0x80, 0x01}},
+	} {
+		if got := majorDouyinRawVarint(nil, tc.val); !bytes.Equal(got, tc.want) {
+			t.Fatalf("varint(%d) = %x, want %x", tc.val, got, tc.want)
+		}
+	}
+	k := [4]uint64{0x0102030405060708, 0x1112131415161718, 0x2122232425262728, 0x3132333435363738}
+	pt := [2]uint64{0x4142434445464748, 0x5152535455565758}
+	if got := majorDouyinSimonEnc(pt, k); got[0] != 0x3602b7b2c178554f || got[1] != 0xb636667ca4b8aeb8 {
+		t.Fatalf("simon_enc mismatch: %#x", got)
+	}
+	if got := majorDouyinLadon(1700000000, 1611921764, 1128, [4]byte{1, 2, 3, 4}); got != "AQIDBBRlRCiEas0D6HtJT6OYC08pznxQ7aPFaGChsJ/91J2q" {
+		t.Fatalf("ladon mismatch: %s", got)
+	}
+	g4404 := majorDouyinGorgon("aweme_id=123&aid=1128", "", "", 1700000000, 4404, [2]byte{})
+	if g4404["x-gorgon"] != "0404b0d30000afff9166eb57387ccee15dbc3694a6177ca72d22" {
+		t.Fatalf("gorgon 4404 mismatch: %s", g4404["x-gorgon"])
+	}
+	gWithBody := majorDouyinGorgon("aweme_id=123&aid=1128", `{"magic_tag":"ss_app_log"}`, "", 1700000000, 4404, [2]byte{})
+	if gWithBody["x-gorgon"] == g4404["x-gorgon"] {
+		t.Fatal("gorgon did not vary with request body")
+	}
+	argus := majorDouyinArgus("aweme_id=123&aid=1128&device_id=7300000000000000000&version_name=39.5.0", "", 1700000000, 1128, 1611921764, 0, "AadCFwpTyztA5j9L123456789", "v05.01.02-alpha.7-ov-android", 83952160, 123456789)
+	if argus != "8oEW98egusY+LFvG7FFEoEjWcAaUPwMYvSaUAPMjZlDHFHpfCOx0wDt1M4Kj2aLKzOFbP6i2PMNC5JcURv7fz8gum8FkTNY9LsM21PQJ/vrgZGdA8MZZjOqcqURPjfTbhDsPIroCdkPR7euz0ac3+oJk0gsidq8PpmX5SCXIZGBHPAxKxVKQP/BP7OvcBAvxRfipZqKAmkSl9O+e4W9iIEMWSwhNKdD+uFmpaBKJKXz+uyWaFV4LBWbi9Gbzv5VCQVL8qbCPw43gGYpqlAOlssm26snjTM91tFZvaUqIcEL7BQD9PegHGWbjDc3zcYE1T2I=" {
+		t.Fatalf("argus mismatch: %s", argus)
+	}
+	bodySum := md5.Sum([]byte(`{"magic_tag":"ss_app_log"}`))
+	argusWithBody := majorDouyinArgus("aweme_id=123&aid=1128&device_id=7300000000000000000&version_name=39.5.0", strings.ToUpper(hex.EncodeToString(bodySum[:])), 1700000000, 1128, 1611921764, 0, "AadCFwpTyztA5j9L123456789", "v05.01.02-alpha.7-ov-android", 83952160, 123456789)
+	if argusWithBody == argus {
+		t.Fatal("argus did not vary with body stub")
+	}
+
+	for _, key := range []string{
+		"PARSEHUB_DOUYIN_DEVICE_ID", "DOUYIN_DEVICE_ID",
+		"PARSEHUB_DOUYIN_IID", "PARSEHUB_DOUYIN_INSTALL_ID", "DOUYIN_IID",
+	} {
+		t.Setenv(key, "")
+	}
+	majorDouyinPoolMu.Lock()
+	majorDouyinPool = nil
+	majorDouyinPoolIdx = 0
+	majorDouyinPoolMu.Unlock()
+
+	web403Hit := false
+	registrationHit := false
+	client := &http.Client{Transport: majorTestTransport(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.URL.Path == "/video/789" || r.URL.Path == "/share/video/789/":
+			return majorTestResponse(r, "<html><body>JS shell</body></html>"), nil
+		case r.URL.Path == "/aweme/v1/web/aweme/detail/":
+			web403Hit = true
+			return &http.Response{StatusCode: 403, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("Forbidden")), Request: r}, nil
+		case r.URL.Path == "/service/2/device_register/":
+			registrationHit = true
+			for _, name := range []string{"x-argus", "x-ladon", "x-gorgon", "x-khronos", "x-ss-stub"} {
+				if r.Header.Get(name) == "" {
+					t.Errorf("missing %s on device_register", name)
+				}
+			}
+			reqBody, _ := io.ReadAll(r.Body)
+			wantStubSum := md5.Sum(reqBody)
+			wantStub := strings.ToUpper(hex.EncodeToString(wantStubSum[:]))
+			if gotStub := r.Header.Get("x-ss-stub"); gotStub != wantStub {
+				t.Errorf("device_register x-ss-stub = %s, want %s", gotStub, wantStub)
+			}
+			if r.Header.Get("Cookie") != "" {
+				t.Error("cookie leaked to device_register")
+			}
+			return majorTestResponse(r, `{"device_id":7300000000000000001,"install_id":7300000000000000002}`), nil
+		case r.URL.Path == "/aweme/v1/aweme/detail/":
+			for _, name := range []string{"x-gorgon", "x-khronos", "x-ladon", "x-argus"} {
+				if r.Header.Get(name) == "" {
+					t.Errorf("missing %s on mobile detail request", name)
+				}
+			}
+			if r.URL.Query().Get("device_id") != "7300000000000000001" || r.URL.Query().Get("iid") != "7300000000000000002" {
+				t.Errorf("64-bit numeric device ID rounded: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get("Cookie") != "" {
+				t.Error("cookie leaked to mobile detail endpoint")
+			}
+			return majorTestResponse(r, `{"status_code":0,"aweme_detail":{"aweme_id":"789","desc":"Story video","is_story":1,"author":{"nickname":"Author"},"video":{"duration":12000,"width":1080,"height":1920,"cover":{"url_list":["https://cdn.example/cover.jpg"]},"play_addr":{"uri":"v0200fg10000story","url_list":["https://cdn.example/playwm/low.mp4"],"width":720,"height":1280}}}}`), nil
+		case r.URL.Path == "/aweme/v1/play/":
+			ratio := r.URL.Query().Get("ratio")
+			size := "1000"
+			if ratio == "1080p" {
+				size = "9000"
+			}
+			reqClone := *r
+			u, _ := url.Parse("https://cdn.example/play/story_" + ratio + ".mp4")
+			reqClone.URL = u
+			resp := majorTestResponse(&reqClone, "")
+			resp.Header.Set("Content-Length", size)
+			return resp, nil
+		default:
+			return nil, errors.New("unexpected request: " + r.URL.String())
+		}
+	})}
+	res, err := majorDouyin(context.Background(), client, "https://www.douyin.com/video/789", "s_v_web_id=fp_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !web403Hit {
+		t.Fatal("expected web endpoint 403 before mobile fallback")
+	}
+	if !registrationHit {
+		t.Fatal("expected device registration")
+	}
+	if len(res.Media) != 1 || res.Media[0].URL != "https://cdn.example/play/story_1080p.mp4" || len(res.Media[0].BackupURLs) == 0 || res.Media[0].BackupURLs[0] != "https://cdn.example/play/low.mp4" || res.Author != "Author" {
+		t.Fatalf("unexpected mobile fallback result: %#v", res)
 	}
 }

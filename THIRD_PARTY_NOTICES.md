@@ -2,7 +2,7 @@
 
 ## ParseHub
 
-平台适配器及提取器部分逻辑改写自 https://github.com/z-mio/ParseHub ，本次迁移参考发行版为 2.3.15。相关源文件与 `internal/extractor/LICENSE.parsehub` 保留原 MIT 声明；哔哩哔哩和抖音不属于本次迁移修改。
+平台适配器及提取器部分逻辑改写自 https://github.com/z-mio/ParseHub ，本次迁移参考发行版为 2.3.15。相关源文件与 `internal/extractor/LICENSE.parsehub` 保留原 MIT 声明；哔哩哔哩保持既有原生实现。
 
 MIT License
 

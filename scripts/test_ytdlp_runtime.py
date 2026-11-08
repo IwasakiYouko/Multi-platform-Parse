@@ -80,6 +80,25 @@ class RuntimePackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside HTTPS"):
                 runtime.download(artifact, Path(temporary) / "artifact")
 
+    def test_download_retries_transient_gateway_timeout(self):
+        """Verify transient HTTP 504 gateway timeouts are retried and verified."""
+        payload = b"recovered"
+        artifact = {"url": Response.url, "size": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest()}
+        gateway_timeout = runtime.urllib.error.HTTPError(
+            Response.url, 504, "Gateway Time-out", hdrs=None, fp=None
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "artifact"
+            with patch.object(
+                runtime.urllib.request,
+                "urlopen",
+                side_effect=[gateway_timeout, Response(payload)],
+            ) as mocked:
+                runtime.download(artifact, destination, attempts=2, delay=0)
+            self.assertEqual(mocked.call_count, 2)
+            self.assertEqual(destination.read_bytes(), payload)
+
     def test_deno_rejects_symlink_and_unexpected_members(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

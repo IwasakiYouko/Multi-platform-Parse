@@ -10,6 +10,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import venv
 import zipfile
@@ -26,21 +28,31 @@ def select_wheels(artifacts, python_version):
     return selected
 
 
-def download(artifact, destination):
-    digest = hashlib.sha256()
-    size = 0
-    with urllib.request.urlopen(artifact["url"], timeout=60) as response, destination.open("wb") as output:
-        if not response.url.startswith("https://"):
-            raise ValueError("runtime artifact redirected outside HTTPS")
-        while block := response.read(1024 * 1024):
-            size += len(block)
-            if size > artifact["size"]:
-                raise ValueError("runtime artifact exceeds locked size")
-            digest.update(block)
-            output.write(block)
-    if size != artifact["size"] or digest.hexdigest() != artifact["sha256"]:
-        raise ValueError("runtime artifact checksum/size mismatch")
-
+def download(artifact, destination, attempts=4, delay=2.0):
+    """Download a locked runtime artifact with size, SHA-256, and transient 5xx retry checks."""
+    for attempt in range(1, attempts + 1):
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with urllib.request.urlopen(artifact["url"], timeout=60) as response, destination.open("wb") as output:
+                if not response.url.startswith("https://"):
+                    raise ValueError("runtime artifact redirected outside HTTPS")
+                while block := response.read(1024 * 1024):
+                    size += len(block)
+                    if size > artifact["size"]:
+                        raise ValueError("runtime artifact exceeds locked size")
+                    digest.update(block)
+                    output.write(block)
+            if size != artifact["size"] or digest.hexdigest() != artifact["sha256"]:
+                raise ValueError("runtime artifact checksum/size mismatch")
+            return
+        except urllib.error.HTTPError as err:
+            if err.code not in {408, 429, 500, 502, 503, 504} or attempt >= attempts:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
+            if attempt >= attempts:
+                raise err
+        time.sleep(delay * attempt)
 
 def install_deno(archive, destination):
     with zipfile.ZipFile(archive) as package:
