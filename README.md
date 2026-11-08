@@ -5,7 +5,7 @@
 
 Go 主程序的多平台链接解析工具。接收 NapCat 的 OneBot v11 反向 Universal WebSocket 消息，解析分享链接、AV/BV 编号和分享卡片，下载并发送图片、封面或视频。内置中文控制面板，支持平台策略、代理、登录保护和缓存管理。
 
-除保持既有实现的哔哩哔哩与抖音外，其余平台以 ParseHub **2.3.15** 为迁移基线。YouTube、Facebook、Snapchat 由 Go 调用固定版本的 yt-dlp/EJS/Deno；其他平台使用 Go 适配器，不需要部署 ParseHub 服务。FFmpeg/ffprobe 负责本地媒体处理；默认使用官方自托管 Cap 与 Valkey 提供登录验证码，也可明确关闭验证码。当前镜像面向 **Linux amd64**，使用 Docker Engine 的 **host 网络**。
+除保持既有实现的哔哩哔哩外，其余平台（含抖音移动端设备池与日常回退）以 ParseHub **2.3.15** 为迁移基线。YouTube、Facebook、Snapchat 由 Go 调用固定版本的 yt-dlp/EJS/Deno；其他平台使用 Go 适配器，不需要部署 ParseHub 服务。FFmpeg/ffprobe 负责本地媒体处理；默认使用官方自托管 Cap 与 Valkey 提供登录验证码，也可明确关闭验证码。当前镜像面向 **Linux amd64**，使用 Docker Engine 的 **host 网络**。
 
 **v1.2.0 包含本次解析迁移。已有部署请同时更新应用与 Cap 镜像标签，并保留原数据卷；需要平台登录态时，请在控制面板配置自己的 Cookie。**
 
