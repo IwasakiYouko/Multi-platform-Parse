@@ -38,11 +38,13 @@ type majorDouyinDevice struct {
 }
 
 var (
-	majorDouyinPoolMu  sync.Mutex
-	majorDouyinPool    []majorDouyinDevice
-	majorDouyinPoolIdx int
+	majorDouyinPoolMu   sync.Mutex
+	majorDouyinPool     []majorDouyinDevice
+	majorDouyinPoolIdx  int
+	majorDouyinPoolInit chan struct{}
 )
 
+// majorDouyinFindID extracts the numeric work ID from a Douyin URL path or query.
 func majorDouyinFindID(raw string) string {
 	u, e := url.Parse(raw)
 	if e != nil {
@@ -58,6 +60,8 @@ func majorDouyinFindID(raw string) string {
 	}
 	return ""
 }
+
+// majorDouyin resolves Douyin video, image album, live photo, and Story links.
 func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*model.ParseResult, error) {
 	source := raw
 	headers := majorHeaders(cookie, "https://www.douyin.com/", raw, "douyin.com", "iesdouyin.com")
@@ -114,20 +118,23 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 	if r, err := majorDouyinMobile(ctx, c, id); err == nil {
 		r.SourceURL = source
 		return r, nil
-	} else if webErr == nil {
-		if r, wErr := majorDouyinWeb(ctx, c, id, cookie); wErr == nil {
-			r.SourceURL = source
-			return r, nil
-		} else {
-			webErr = wErr
+	} else {
+		if webErr == nil {
+			if r, wErr := majorDouyinWeb(ctx, c, id, cookie); wErr == nil {
+				r.SourceURL = source
+				return r, nil
+			} else {
+				webErr = wErr
+			}
 		}
 		if strings.Contains(err.Error(), "作品不可见") {
-			return nil, err
+			return nil, fmt.Errorf("%w（无Cookie移动端回退：%v）", webErr, err)
 		}
 	}
 	return nil, webErr
 }
 
+// majorDouyinWeb queries the signed Douyin web detail endpoint.
 func majorDouyinWeb(ctx context.Context, c *http.Client, id, cookie string) (*model.ParseResult, error) {
 	params := url.Values{
 		"device_platform": {"webapp"}, "aid": {"6383"}, "channel": {"channel_pc_web"}, "pc_client_type": {"1"}, "version_code": {"290100"}, "version_name": {"29.1.0"}, "cookie_enabled": {"true"}, "screen_width": {"1920"}, "screen_height": {"1080"}, "browser_language": {"zh-CN"}, "browser_platform": {"Win32"}, "browser_name": {"Chrome"}, "browser_version": {"130.0.0.0"}, "browser_online": {"true"}, "engine_name": {"Blink"}, "engine_version": {"130.0.0.0"}, "os_name": {"Windows"}, "os_version": {"10"}, "cpu_core_num": {"12"}, "device_memory": {"8"}, "platform": {"PC"}, "downlink": {"10"}, "effective_type": {"4g"}, "aweme_id": {id},
@@ -162,17 +169,22 @@ func majorDouyinWeb(ctx context.Context, c *http.Client, id, cookie string) (*mo
 	return majorDouyinDetail(detail)
 }
 
+// majorDouyinRandDigits19 returns a random 19-digit numeric identifier string.
 func majorDouyinRandDigits19() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	v := (binary.LittleEndian.Uint64(b[:]) % 8999999999999999999) + 1000000000000000000
 	return strconv.FormatUint(v, 10)
 }
+
+// majorDouyinRandHex returns a random hex string of length 2*nBytes.
 func majorDouyinRandHex(nBytes int) string {
 	b := make([]byte, nBytes)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+// majorDouyinEnvDevice reads an optional pre-registered mobile device from environment variables.
 func majorDouyinEnvDevice() (majorDouyinDevice, bool) {
 	devID := strings.TrimSpace(os.Getenv("PARSEHUB_DOUYIN_DEVICE_ID"))
 	if devID == "" {
@@ -198,6 +210,8 @@ func majorDouyinEnvDevice() (majorDouyinDevice, bool) {
 	}
 	return majorDouyinDevice{deviceID: devID, iid: iid, cdid: cdid, openudid: openudid}, true
 }
+
+// majorDouyinRegisterDevice registers a virtual Android device with Douyin's device_register service.
 func majorDouyinRegisterDevice(ctx context.Context, c *http.Client) (majorDouyinDevice, error) {
 	reqCtx := netx.WithoutCookies(ctx)
 	hosts := []string{"log.snssdk.com", "api.amemv.com"}
@@ -232,12 +246,6 @@ func majorDouyinRegisterDevice(ctx context.Context, c *http.Client) (majorDouyin
 			"device_id": {majorDouyinRandDigits19()}, "openudid": {openudid},
 		}
 		query := v.Encode()
-		headers := majorDouyinMobileSign(query, 8404)
-		headers["User-Agent"] = majorDouyinAppUA
-		headers["x-tt-trace-id"] = majorDouyinTraceID(v.Get("device_id"))
-		headers["sdk-version"] = "2"
-		headers["passport-sdk-version"] = "203226"
-		headers["Content-Type"] = "application/json; charset=utf-8"
 		payload := map[string]any{
 			"magic_tag": "ss_app_log",
 			"header": map[string]any{
@@ -259,6 +267,12 @@ func majorDouyinRegisterDevice(ctx context.Context, c *http.Client) (majorDouyin
 			lastErr = err
 			continue
 		}
+		headers := majorDouyinMobileSign(query, body, 8404)
+		headers["User-Agent"] = majorDouyinAppUA
+		headers["x-tt-trace-id"] = majorDouyinTraceID(v.Get("device_id"))
+		headers["sdk-version"] = "2"
+		headers["passport-sdk-version"] = "203226"
+		headers["Content-Type"] = "application/json; charset=utf-8"
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, "https://"+host+"/service/2/device_register/?"+query, bytes.NewReader(body))
 		if err != nil {
 			lastErr = err
@@ -279,7 +293,9 @@ func majorDouyinRegisterDevice(ctx context.Context, c *http.Client) (majorDouyin
 			continue
 		}
 		var res map[string]any
-		if err := json.Unmarshal(rawBody, &res); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(rawBody))
+		dec.UseNumber()
+		if err := dec.Decode(&res); err != nil {
 			lastErr = err
 			continue
 		}
@@ -295,55 +311,87 @@ func majorDouyinRegisterDevice(ctx context.Context, c *http.Client) (majorDouyin
 	}
 	return majorDouyinDevice{}, lastErr
 }
+
+// majorDouyinSelectDevice returns a pooled or newly registered mobile device, coalescing concurrent pool initializations.
 func majorDouyinSelectDevice(ctx context.Context, c *http.Client) (majorDouyinDevice, bool, error) {
 	if dev, ok := majorDouyinEnvDevice(); ok {
 		return dev, true, nil
 	}
-	majorDouyinPoolMu.Lock()
-	if len(majorDouyinPool) > 0 {
+	for {
+		majorDouyinPoolMu.Lock()
+		if len(majorDouyinPool) > 0 {
+			dev := majorDouyinPool[majorDouyinPoolIdx%len(majorDouyinPool)]
+			majorDouyinPoolIdx = (majorDouyinPoolIdx + 1) % len(majorDouyinPool)
+			majorDouyinPoolMu.Unlock()
+			return dev, false, nil
+		}
+		if waitCh := majorDouyinPoolInit; waitCh != nil {
+			majorDouyinPoolMu.Unlock()
+			select {
+			case <-waitCh:
+				majorDouyinPoolMu.Lock()
+				if len(majorDouyinPool) > 0 {
+					dev := majorDouyinPool[majorDouyinPoolIdx%len(majorDouyinPool)]
+					majorDouyinPoolIdx = (majorDouyinPoolIdx + 1) % len(majorDouyinPool)
+					majorDouyinPoolMu.Unlock()
+					return dev, false, nil
+				}
+				majorDouyinPoolMu.Unlock()
+				return majorDouyinDevice{}, false, fmt.Errorf("device registration failed")
+			case <-ctx.Done():
+				return majorDouyinDevice{}, false, ctx.Err()
+			}
+		}
+		initCh := make(chan struct{})
+		majorDouyinPoolInit = initCh
+		majorDouyinPoolMu.Unlock()
+
+		initCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		var registered []majorDouyinDevice
+		var lastErr error
+		for range 4 {
+			dev, err := majorDouyinRegisterDevice(initCtx, c)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			registered = append(registered, dev)
+			if len(registered) >= 2 {
+				break
+			}
+		}
+		cancel()
+
+		majorDouyinPoolMu.Lock()
+		for _, d := range registered {
+			exists := false
+			for _, existing := range majorDouyinPool {
+				if existing.deviceID == d.deviceID && existing.iid == d.iid {
+					exists = true
+					break
+				}
+			}
+			if !exists && len(majorDouyinPool) < 3 {
+				majorDouyinPool = append(majorDouyinPool, d)
+			}
+		}
+		majorDouyinPoolInit = nil
+		close(initCh)
+		if len(majorDouyinPool) == 0 {
+			majorDouyinPoolMu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return majorDouyinDevice{}, false, err
+			}
+			return majorDouyinDevice{}, false, lastErr
+		}
 		dev := majorDouyinPool[majorDouyinPoolIdx%len(majorDouyinPool)]
 		majorDouyinPoolIdx = (majorDouyinPoolIdx + 1) % len(majorDouyinPool)
 		majorDouyinPoolMu.Unlock()
 		return dev, false, nil
 	}
-	majorDouyinPoolMu.Unlock()
-	var registered []majorDouyinDevice
-	var lastErr error
-	for range 4 {
-		if err := ctx.Err(); err != nil {
-			return majorDouyinDevice{}, false, err
-		}
-		dev, err := majorDouyinRegisterDevice(ctx, c)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		registered = append(registered, dev)
-		if len(registered) >= 2 {
-			break
-		}
-	}
-	if len(registered) == 0 {
-		return majorDouyinDevice{}, false, lastErr
-	}
-	majorDouyinPoolMu.Lock()
-	for _, d := range registered {
-		exists := false
-		for _, existing := range majorDouyinPool {
-			if existing.deviceID == d.deviceID && existing.iid == d.iid {
-				exists = true
-				break
-			}
-		}
-		if !exists && len(majorDouyinPool) < 3 {
-			majorDouyinPool = append(majorDouyinPool, d)
-		}
-	}
-	dev := majorDouyinPool[majorDouyinPoolIdx%len(majorDouyinPool)]
-	majorDouyinPoolIdx = (majorDouyinPoolIdx + 1) % len(majorDouyinPool)
-	majorDouyinPoolMu.Unlock()
-	return dev, false, nil
 }
+
+// majorDouyinEvictDevice removes an invalidated mobile device from the pool.
 func majorDouyinEvictDevice(target majorDouyinDevice) {
 	majorDouyinPoolMu.Lock()
 	defer majorDouyinPoolMu.Unlock()
@@ -360,6 +408,8 @@ func majorDouyinEvictDevice(target majorDouyinDevice) {
 		majorDouyinPoolIdx = 0
 	}
 }
+
+// majorDouyinAttachStoryPlay probes mobile play ratios for Story videos and prepends the highest-quality direct stream.
 func majorDouyinAttachStoryPlay(ctx context.Context, c *http.Client, detail map[string]any) {
 	isStory := Number(detail["is_story"]) == 1 || detail["is_story"] == true || Text(detail["is_story"]) == "1" ||
 		Number(detail["is_24_story"]) == 1 || detail["is_24_story"] == true || Text(detail["is_24_story"]) == "1"
@@ -387,10 +437,14 @@ func majorDouyinAttachStoryPlay(ctx context.Context, c *http.Client, detail map[
 	}
 	bestURL := ""
 	var bestLen int64 = -1
-	reqCtx := netx.WithoutCookies(ctx)
+	probeCtx, cancel := context.WithTimeout(netx.WithoutCookies(ctx), 10*time.Second)
+	defer cancel()
 	for _, ratio := range []string{"default", "1080p", "720p", "540p", "480p"} {
+		if probeCtx.Err() != nil {
+			break
+		}
 		api := "https://aweme.snssdk.com/aweme/v1/play/?video_id=" + url.QueryEscape(videoURI) + "&ratio=" + ratio + "&line=0"
-		req, err := http.NewRequestWithContext(reqCtx, http.MethodHead, api, nil)
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodHead, api, nil)
 		if err != nil {
 			continue
 		}
@@ -413,13 +467,29 @@ func majorDouyinAttachStoryPlay(ctx context.Context, c *http.Client, detail map[
 	if bestURL == "" {
 		return
 	}
+	urlList := []any{bestURL}
+	seen := map[string]bool{bestURL: true}
+	for _, u := range majorURLs(Path(video, "play_addr", "url_list")) {
+		if !seen[u] {
+			seen[u] = true
+			urlList = append(urlList, u)
+		}
+	}
+	for _, item := range Array(video["bit_rate"]) {
+		for _, u := range majorURLs(Path(item, "play_addr", "url_list")) {
+			if !seen[u] {
+				seen[u] = true
+				urlList = append(urlList, u)
+			}
+		}
+	}
 	synthetic := map[string]any{
 		"bit_rate":      0,
 		"is_story_play": true,
 		"duration":      video["duration"],
 		"play_addr": map[string]any{
 			"uri":       videoURI,
-			"url_list":  []any{bestURL},
+			"url_list":  urlList,
 			"data_size": bestLen,
 			"width":     video["width"],
 			"height":    video["height"],
@@ -427,6 +497,8 @@ func majorDouyinAttachStoryPlay(ctx context.Context, c *http.Client, detail map[
 	}
 	video["bit_rate"] = append([]any{synthetic}, Array(video["bit_rate"])...)
 }
+
+// majorDouyinMobile queries Douyin's mobile detail endpoints using pooled Android device credentials.
 func majorDouyinMobile(ctx context.Context, c *http.Client, id string) (*model.ParseResult, error) {
 	reqCtx := netx.WithoutCookies(ctx)
 	hosts := []string{"api.amemv.com", "api3-core-c.amemv.com", "aweme.snssdk.com", "api5-normal-lf.amemv.com", "api3-normal-c.amemv.com"}
@@ -468,7 +540,7 @@ func majorDouyinMobile(ctx context.Context, c *http.Client, id string) (*model.P
 		query := v.Encode()
 		replaceDevice := false
 		for _, ver := range versions {
-			headers := majorDouyinMobileSign(query, ver)
+			headers := majorDouyinMobileSign(query, nil, ver)
 			headers["User-Agent"] = majorDouyinAppUA
 			headers["x-tt-trace-id"] = majorDouyinTraceID(dev.deviceID)
 			headers["sdk-version"] = "2"
@@ -507,7 +579,9 @@ func majorDouyinMobile(ctx context.Context, c *http.Client, id string) (*model.P
 					continue
 				}
 				var payload map[string]any
-				if err := json.Unmarshal(body, &payload); err != nil {
+				dec := json.NewDecoder(bytes.NewReader(body))
+				dec.UseNumber()
+				if err := dec.Decode(&payload); err != nil {
 					lastErr = err
 					continue
 				}
@@ -530,6 +604,8 @@ func majorDouyinMobile(ctx context.Context, c *http.Client, id string) (*model.P
 	}
 	return nil, lastErr
 }
+
+// majorDouyinState extracts an embedded work detail object from a Douyin HTML page.
 func majorDouyinState(page []byte, id string) map[string]any {
 	for _, state := range majorStates(page, "window._ROUTER_DATA", "_ROUTER_DATA", "window.__ROUTER_DATA__", "window.__INITIAL_STATE__", "_SSR_HYDRATED_DATA") {
 		var found map[string]any
@@ -551,6 +627,8 @@ func majorDouyinState(page []byte, id string) map[string]any {
 	}
 	return nil
 }
+
+// majorDouyinVideo selects the best watermark-free video stream from a Douyin video object.
 func majorDouyinVideo(video map[string]any, headers map[string]string) (model.Media, error) {
 	rates := Array(video["bit_rate"])
 	if len(rates) == 0 {
@@ -614,6 +692,8 @@ func majorDouyinVideo(video map[string]any, headers map[string]string) (model.Me
 	}
 	return m, nil
 }
+
+// majorDouyinDetail converts an aweme_detail object into a ParseResult.
 func majorDouyinDetail(detail map[string]any) (*model.ParseResult, error) {
 	r := &model.ParseResult{Platform: "douyin", Title: Text(detail["desc"]), Content: Text(detail["desc"]), Author: Text(Path(detail, "author", "nickname")), Headers: majorMediaHeaders("https://www.douyin.com/")}
 	images := Array(detail["images"])

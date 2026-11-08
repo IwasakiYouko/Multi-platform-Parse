@@ -81,6 +81,8 @@ func majorSM3(input []byte) []byte {
 	}
 	return out
 }
+
+// majorRC4 encrypts or decrypts input with RC4 using key.
 func majorRC4(key, input []byte) []byte {
 	cipher, err := rc4.NewCipher(key)
 	if err != nil {
@@ -90,6 +92,8 @@ func majorRC4(key, input []byte) []byte {
 	cipher.XORKeyStream(out, input)
 	return out
 }
+
+// majorDouyinABogus computes the browser a_bogus query parameter for Douyin web APIs.
 func majorDouyinABogus(query string, start, end int64, random [6]byte) string {
 	params := majorSM3(majorSM3([]byte(query + "cus")))
 	method := majorSM3(majorSM3([]byte("GETcus")))
@@ -106,6 +110,8 @@ func majorDouyinABogus(query string, start, end int64, random [6]byte) string {
 	payload := append(prefix, majorRC4([]byte("y"), body)...)
 	return base64.NewEncoding("Dkdpgh2ZmsQB80/MfvV36XI1R45-WUAlEixNLwoqYTOPuzKFjJnry79HbGcaStCe").EncodeToString(payload)
 }
+
+// majorDouyinQuote percent-encodes s while preserving Douyin's safe characters (*-._).
 func majorDouyinQuote(s string) string {
 	var b strings.Builder
 	for i := range len(s) {
@@ -118,6 +124,8 @@ func majorDouyinQuote(s string) string {
 	}
 	return b.String()
 }
+
+// majorDouyinEncodePairs serializes ordered key-value pairs into a query string.
 func majorDouyinEncodePairs(pairs [][2]string) string {
 	var b strings.Builder
 	for i, kv := range pairs {
@@ -130,6 +138,8 @@ func majorDouyinEncodePairs(pairs [][2]string) string {
 	}
 	return b.String()
 }
+
+// majorDouyinSignedQuery signs ordered Douyin web detail query parameters with a_bogus and optional uifid headers.
 func majorDouyinSignedQuery(params url.Values, cookie string) (string, map[string]string, error) {
 	order := []string{
 		"device_platform", "aid", "channel", "pc_client_type", "version_code", "version_name",
@@ -187,6 +197,7 @@ func majorDouyinSignedQuery(params url.Values, cookie string) (string, map[strin
 	return majorDouyinEncodePairs(pairs), h, nil
 }
 
+// majorDouyinSimonEnc encrypts a 128-bit block with 72-round Simon128/256.
 func majorDouyinSimonEnc(pt [2]uint64, k [4]uint64) [2]uint64 {
 	var key [72]uint64
 	copy(key[:4], k[:])
@@ -205,6 +216,7 @@ func majorDouyinSimonEnc(pt [2]uint64, k [4]uint64) [2]uint64 {
 	return [2]uint64{x0, x1}
 }
 
+// majorDouyinLadon generates the x-ladon header value for Douyin mobile requests.
 func majorDouyinLadon(unix int64, lcID, aid int, randomBytes [4]byte) string {
 	data := []byte(fmt.Sprintf("%d-%d-%d", unix, lcID, aid))
 	keygen := append(append([]byte(nil), randomBytes[:]...), strconv.Itoa(aid)...)
@@ -250,6 +262,7 @@ func majorDouyinLadon(unix int64, lcID, aid int, randomBytes [4]byte) string {
 	return base64.StdEncoding.EncodeToString(out)
 }
 
+// majorDouyinGorgon generates x-gorgon, x-khronos, and x-ss-req-ticket headers for version 8404 or 4404.
 func majorDouyinGorgon(params, payload, cookie string, unix int64, version int, randCE [2]byte) map[string]string {
 	var paramList [20]byte
 	pSum := md5.Sum([]byte(params))
@@ -293,23 +306,30 @@ func majorDouyinGorgon(params, payload, cookie string, unix int64, version int, 
 	}
 }
 
+// majorDouyinAppendVarint appends a protobuf varint field (wire type 0) to b.
 func majorDouyinAppendVarint(b []byte, field int, val uint64) []byte {
 	b = majorDouyinRawVarint(b, uint64(field<<3))
 	return majorDouyinRawVarint(b, val)
 }
+
+// majorDouyinRawVarint encodes val as a 32-bit base-128 varint.
 func majorDouyinRawVarint(b []byte, val uint64) []byte {
 	v := val & 0xFFFFFFFF
-	for v > 0x80 {
+	for v >= 0x80 {
 		b = append(b, byte((v&0x7F)|0x80))
 		v >>= 7
 	}
 	return append(b, byte(v&0x7F))
 }
+
+// majorDouyinAppendBytes appends a length-delimited protobuf field (wire type 2) to b.
 func majorDouyinAppendBytes(b []byte, field int, data []byte) []byte {
 	b = majorDouyinRawVarint(b, uint64((field<<3)|2))
 	b = majorDouyinRawVarint(b, uint64(len(data)))
 	return append(b, data...)
 }
+
+// majorDouyinArgusProtobuf serializes the protobuf payload for x-argus.
 func majorDouyinArgusProtobuf(aid, licenseID, platform int, deviceID, versionName, sdkVersionStr string, sdkVersionInt int, timestamp int64, randVal uint32, bodyHash, queryHash []byte, secDeviceID string) []byte {
 	var f15 []byte
 	f15 = majorDouyinAppendVarint(f15, 1, 1)
@@ -343,10 +363,14 @@ func majorDouyinArgusProtobuf(aid, licenseID, platform int, deviceID, versionNam
 	pb = majorDouyinAppendVarint(pb, 25, 2)
 	return pb
 }
+
+// majorDouyinPKCS7Pad pads data to a multiple of blockSize using PKCS#7.
 func majorDouyinPKCS7Pad(data []byte, blockSize int) []byte {
 	pad := blockSize - (len(data) % blockSize)
 	return append(append([]byte(nil), data...), bytes.Repeat([]byte{byte(pad)}, pad)...)
 }
+
+// majorDouyinArgusEncrypt encrypts the serialized Argus protobuf with Simon128/256 and AES-CBC.
 func majorDouyinArgusEncrypt(pb []byte) string {
 	padded := majorDouyinPKCS7Pad(pb, 16)
 	signKey := []byte("\xac\x1a\xda\xae\x95\xa7\xaf\x94\xa5\x11J\xb3\xb3\xa9}\xd8\x00P\xaa\n91L@R\x8c\xae\xc9RV\xc2\x8c")
@@ -385,6 +409,8 @@ func majorDouyinArgusEncrypt(pb []byte) string {
 	cipher.NewCBCEncrypter(block, aesIV[:]).CryptBlocks(ct, bBufPadded)
 	return base64.StdEncoding.EncodeToString(append([]byte("\xf2\x81"), ct...))
 }
+
+// majorDouyinArgus computes the x-argus header value for Douyin mobile requests.
 func majorDouyinArgus(query, stub string, timestamp int64, aid, licenseID, platform int, secDeviceID, sdkVersionStr string, sdkVersionInt int, randVal uint32) string {
 	var bodyHash []byte
 	if stub == "" {
@@ -404,6 +430,8 @@ func majorDouyinArgus(query, stub string, timestamp int64, aid, licenseID, platf
 	pb := majorDouyinArgusProtobuf(aid, licenseID, platform, values.Get("device_id"), values.Get("version_name"), sdkVersionStr, sdkVersionInt, timestamp, randVal, bodyHash, queryHash, secDeviceID)
 	return majorDouyinArgusEncrypt(pb)
 }
+
+// majorDouyinTraceID generates an x-tt-trace-id header for the given mobile device ID.
 func majorDouyinTraceID(deviceID string) string {
 	nowMs := uint64(time.Now().UnixMilli())
 	e := fmt.Sprintf("%08x", nowMs%4294967295)
@@ -435,7 +463,9 @@ func majorDouyinTraceID(deviceID string) string {
 	}
 	return fmt.Sprintf("00-%s-%s-01", e3, e3Prefix)
 }
-func majorDouyinMobileSign(query string, version int) map[string]string {
+
+// majorDouyinMobileSign generates mobile authentication headers (x-gorgon, x-khronos, x-ss-req-ticket, x-ss-stub, x-ladon, x-argus).
+func majorDouyinMobileSign(query string, body []byte, version int) map[string]string {
 	unix := time.Now().Unix()
 	var randCE [2]byte
 	var ladonRand [4]byte
@@ -451,12 +481,12 @@ func majorDouyinMobileSign(query string, version int) map[string]string {
 	for _, b := range secRand {
 		sec.WriteByte(alpha[int(b)%len(alpha)])
 	}
-	emptyMD5 := md5.Sum(nil)
-	stub := strings.ToUpper(hex.EncodeToString(emptyMD5[:]))
+	bodySum := md5.Sum(body)
+	stub := strings.ToUpper(hex.EncodeToString(bodySum[:]))
 	randVal := binary.LittleEndian.Uint32(argusRand[:]) & 0x7FFFFFFF
 	const aid = 1128
 	const licenseID = 1611921764
-	headers := majorDouyinGorgon(query, "", "", unix, version, randCE)
+	headers := majorDouyinGorgon(query, string(body), "", unix, version, randCE)
 	headers["x-ss-stub"] = stub
 	headers["x-ladon"] = majorDouyinLadon(unix, licenseID, aid, ladonRand)
 	headers["x-argus"] = majorDouyinArgus(query, stub, unix, aid, licenseID, 0, sec.String(), "v05.01.02-alpha.7-ov-android", 83952160, randVal)
