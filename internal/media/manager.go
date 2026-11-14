@@ -240,16 +240,16 @@ func (p *preparation) hardLimit() int64 {
 
 func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.ParseResult, key string) (_ []model.Artifact, err error) {
 	if !validKey(key) {
-		return nil, errors.New("无效缓存键")
+		return nil, permanentError(errors.New("无效缓存键"))
 	}
 	if cfg.Media.MaxBytes < 1024 || cfg.Media.MaxBytes > maxNativeBytes || cfg.Media.MaxDiskBytes < cfg.Media.MaxBytes || cfg.Media.MaxImages < 1 || cfg.Media.MaxImages > 200 || cfg.Media.MaxDurationSeconds < 1 || cfg.Media.MaxDurationSeconds > 86400 || cfg.Media.Concurrency < 1 || cfg.Media.Concurrency > 16 || cfg.Media.TranscodeConcurrency < 1 || cfg.Media.TranscodeConcurrency > 4 || (cfg.Media.OversizeMode != "file" && cfg.Media.OversizeMode != "link") {
-		return nil, errors.New("无效媒体资源限制")
+		return nil, permanentError(errors.New("无效媒体资源限制"))
 	}
 	if len(result.Media) == 0 && result.Extraction == nil {
 		return nil, nil
 	}
 	if len(result.Media) > cfg.Media.MaxImages+16 {
-		return nil, errors.New("媒体数量超出限制")
+		return nil, permanentError(errors.New("媒体数量超出限制"))
 	}
 	images := 0
 	for _, item := range result.Media {
@@ -257,11 +257,11 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 			images++
 		}
 		if item.Duration > float64(cfg.Media.MaxDurationSeconds) {
-			return nil, errors.New("媒体时长超过限制")
+			return nil, permanentError(errors.New("媒体时长超过限制"))
 		}
 	}
 	if images > cfg.Media.MaxImages {
-		return nil, fmt.Errorf("图片数量超过限制 %d", cfg.Media.MaxImages)
+		return nil, permanentError(fmt.Errorf("图片数量超过限制 %d", cfg.Media.MaxImages))
 	}
 	release, err := m.acquire(ctx, false, cfg.Media.Concurrency)
 	if err != nil {
@@ -279,7 +279,7 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 	defer cancel()
 	client, err := netx.Client(cfg, result.Platform)
 	if err != nil {
-		return nil, err
+		return nil, permanentError(err)
 	}
 	defer client.CloseIdleConnections()
 	dir, err := os.MkdirTemp(m.root, ".stage-")
@@ -324,7 +324,7 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 		}
 	}
 	if actualImages > cfg.Media.MaxImages {
-		return nil, errors.New("实际图片数量超过限制")
+		return nil, permanentError(errors.New("实际图片数量超过限制"))
 	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -358,7 +358,7 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 		if statErr != nil {
 			return nil, statErr
 		}
-		return nil, errors.New("缓存键已存在，拒绝覆盖")
+		return nil, permanentError(errors.New("缓存键已存在，拒绝覆盖"))
 	}
 	err = os.Rename(dir, destination)
 	m.mu.Unlock()
@@ -380,7 +380,7 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 
 func (p *preparation) download(ctx context.Context, raw string, headers map[string]string, limit int64, extension string) (string, string, error) {
 	if limit < 1 || limit > maxNativeBytes {
-		return "", "", errors.New("无效下载上限")
+		return "", "", permanentError(errors.New("无效下载上限"))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
@@ -399,7 +399,7 @@ func (p *preparation) download(ctx context.Context, raw string, headers map[stri
 		return "", "", fmt.Errorf("媒体下载返回HTTP %d", response.StatusCode)
 	}
 	if response.ContentLength > limit {
-		return "", "", fmt.Errorf("媒体超过下载上限 %d 字节；可提高限制或使用file模式", limit)
+		return "", "", permanentError(fmt.Errorf("媒体超过下载上限 %d 字节；可提高限制或使用file模式", limit))
 	}
 	path := p.next(extension)
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -424,7 +424,7 @@ func (p *preparation) download(ctx context.Context, raw string, headers map[stri
 		n, readErr := response.Body.Read(buffer)
 		if n > 0 {
 			if int64(n) > limit-written {
-				return "", "", fmt.Errorf("媒体超过下载上限 %d 字节；可提高限制或使用file模式", limit)
+				return "", "", permanentError(fmt.Errorf("媒体超过下载上限 %d 字节；可提高限制或使用file模式", limit))
 			}
 			if err = p.claim(int64(n)); err != nil {
 				return "", "", err
@@ -454,6 +454,9 @@ func (p *preparation) download(ctx context.Context, raw string, headers map[stri
 			default:
 			}
 		}
+	}
+	if response.ContentLength >= 0 && written != response.ContentLength {
+		return "", "", fmt.Errorf("媒体下载不完整（预期 %d 字节，实际 %d 字节）", response.ContentLength, written)
 	}
 	if written == 0 {
 		return "", "", errors.New("媒体内容为空")

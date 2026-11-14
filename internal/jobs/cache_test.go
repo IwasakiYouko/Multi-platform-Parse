@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -131,5 +132,65 @@ func TestSignedMediaCannotBypassPlatformDisableOrSignature(t *testing.T) {
 	s.MediaHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("disabled platform still serves cached media: %d", rec.Code)
+	}
+}
+func TestAcquireRetriesOnceOnRetryableMediaFailure(t *testing.T) {
+	s := cacheService(t)
+	resolveCalls, prepareCalls := 0, 0
+	s.resolve = func(_ context.Context, _ model.Config, raw string) (*model.ParseResult, error) {
+		resolveCalls++
+		return &model.ParseResult{
+			Platform:  "douyin",
+			SourceURL: raw,
+			Type:      "video",
+			Title:     fmt.Sprintf("attempt-%d", resolveCalls),
+			Media:     []model.Media{{Kind: "video", URL: fmt.Sprintf("https://cdn%d.example/video.mp4", resolveCalls)}},
+		}, nil
+	}
+	s.prepare = func(_ context.Context, _ model.Config, result model.ParseResult, key string) ([]model.Artifact, error) {
+		prepareCalls++
+		if prepareCalls == 1 {
+			return nil, errors.New("ffmpeg媒体处理失败")
+		}
+		dir := filepath.Join(s.media.Root(), key)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return nil, err
+		}
+		videoPath := filepath.Join(dir, "0001.mp4")
+		if err := os.WriteFile(videoPath, []byte("mp4data"), 0600); err != nil {
+			return nil, err
+		}
+		return []model.Artifact{{Kind: "video", Path: videoPath, Size: 7, Duration: 1, Width: 64, Height: 48}}, nil
+	}
+	key1 := strings.Repeat("d", 64)
+	entry, release, err := s.acquire(context.Background(), s.st.Config(), "https://www.douyin.com/video/1001", key1)
+	if err != nil {
+		t.Fatalf("acquire should succeed on second attempt: %v", err)
+	}
+	defer release()
+	if resolveCalls != 2 || prepareCalls != 2 {
+		t.Fatalf("expected 2 resolve and 2 prepare calls, got resolve=%d prepare=%d", resolveCalls, prepareCalls)
+	}
+	if entry.Result.Title != "attempt-2" || len(entry.Files) != 1 {
+		t.Fatalf("expected second resolve result to be cached, got: %+v", entry)
+	}
+	if cached, cacheErr := s.st.GetCache(key1); cacheErr != nil || cached == nil {
+		t.Fatalf("expected cache entry persisted after retry: cached=%v err=%v", cached, cacheErr)
+	}
+
+	resolveCalls, prepareCalls = 0, 0
+	s.prepare = func(_ context.Context, _ model.Config, _ model.ParseResult, _ string) ([]model.Artifact, error) {
+		prepareCalls++
+		return nil, errors.New("媒体实际时长超过限制")
+	}
+	key2 := strings.Repeat("e", 64)
+	if _, _, err = s.acquire(context.Background(), s.st.Config(), "https://www.douyin.com/video/1002", key2); err == nil {
+		t.Fatal("expected non-retryable prepare error")
+	}
+	if resolveCalls != 1 || prepareCalls != 1 {
+		t.Fatalf("non-retryable error must not trigger re-resolve: resolve=%d prepare=%d", resolveCalls, prepareCalls)
+	}
+	if cached, _ := s.st.GetCache(key2); cached != nil {
+		t.Fatalf("failed non-retryable acquire must not write cache: %+v", cached)
 	}
 }

@@ -60,6 +60,8 @@ type Service struct {
 	lastCleanupError string
 	signingKey       []byte
 	cooldowns        map[string]cooldownEntry
+	resolve          func(context.Context, model.Config, string) (*model.ParseResult, error)
+	prepare          func(context.Context, model.Config, model.ParseResult, string) ([]model.Artifact, error)
 }
 
 func New(st *store.Store, m *media.Manager, sender Sender) *Service {
@@ -70,6 +72,10 @@ func New(st *store.Store, m *media.Manager, sender Sender) *Service {
 	s := &Service{st: st, media: m, sender: sender, ctx: ctx, cancel: cancel, queue: make(chan work, 64), active: map[string]running{}, changed: make(chan struct{}), leases: map[string]int{}, pending: map[string]bool{}, flights: map[string]*flight{}}
 	s.signingKey = []byte(model.NewID() + model.NewID())
 	s.cooldowns = make(map[string]cooldownEntry)
+	s.resolve = parser.Resolve
+	if m != nil {
+		s.prepare = m.Prepare
+	}
 	for range 16 {
 		s.wg.Add(1)
 		go s.worker()
@@ -330,13 +336,38 @@ func (s *Service) acquire(ctx context.Context, cfg model.Config, raw, key string
 		s.flights[key] = f
 		s.leases[key]++
 		s.cacheMu.Unlock()
-		result, err := parser.Resolve(ctx, cfg, raw)
-		var files []model.Artifact
-		if err == nil {
-			err = policy.MediaCheck(cfg, *result, nil)
+		resolveFn := s.resolve
+		if resolveFn == nil {
+			resolveFn = parser.Resolve
 		}
-		if err == nil && cfg.Media.AutoDownload {
-			files, err = s.media.Prepare(ctx, cfg, *result, key)
+		prepareFn := s.prepare
+		if prepareFn == nil && s.media != nil {
+			prepareFn = s.media.Prepare
+		}
+		var result *model.ParseResult
+		var files []model.Artifact
+		var err error
+		for attempt := range 2 {
+			files = nil
+			result, err = resolveFn(ctx, cfg, raw)
+			if err != nil {
+				break
+			}
+			if err = policy.MediaCheck(cfg, *result, nil); err != nil {
+				break
+			}
+			if !cfg.Media.AutoDownload {
+				break
+			}
+			files, err = prepareFn(ctx, cfg, *result, key)
+			if err == nil {
+				break
+			}
+			if attempt == 0 && result.Extraction == nil && ctx.Err() == nil && media.IsRetryable(err) {
+				slog.Warn("媒体处理失败，尝试重新解析并获取新节点", "platform", result.Platform, "reason", safeError(err))
+				continue
+			}
+			break
 		}
 		now := time.Now().UTC()
 		var e *model.CacheEntry

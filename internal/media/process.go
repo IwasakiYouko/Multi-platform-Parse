@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"os"
 	"os/exec"
@@ -13,11 +15,143 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"multiparse/internal/model"
 )
 
 const localFormats = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,mpegts,mpeg,avi,flv,ogg,mp3,aac,wav,flac,gif,image2,jpeg_pipe,png_pipe,webp_pipe,avif,heif"
+
+type permanentMediaError struct {
+	err error
+}
+
+func (e permanentMediaError) Error() string { return e.err.Error() }
+func (e permanentMediaError) Unwrap() error { return e.err }
+
+func permanentError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return permanentMediaError{err: err}
+}
+
+var nonRetryableMediaPhrases = []string{
+	"未安装ffmpeg",
+	"未安装ffprobe",
+	"超过限制",
+	"超出限制",
+	"超过安全限制",
+	"超出安全限制",
+	"超过大小限制",
+	"超过发送限制",
+	"超过下载上限",
+	"超过2MiB限制",
+	"清单过大",
+	"变体过多",
+	"提取媒体",
+	"媒体提取",
+	"提取器",
+	"无效缓存键",
+	"无效媒体资源限制",
+	"无效下载上限",
+	"无效磁盘预留",
+	"磁盘上限",
+	"磁盘计数溢出",
+	"并发限制",
+	"工作集",
+	"符号链接",
+	"非普通文件",
+	"必须是实际目录",
+	"不是实际目录",
+	"缓存键已存在",
+	"清理媒体临时目录失败",
+	"缺少下载地址",
+	"备用地址数量",
+	"实况照片必须包含",
+	"仅允许HTTP(S)源资源",
+	"拒绝HTTPS降级资源",
+	"禁止认证URL",
+	"不支持的加密或DRM",
+	"不支持低延迟或会话加密HLS",
+	"直播流不受支持",
+	"拒绝无法限制的媒体",
+}
+
+// IsRetryable reports whether err comes from a remote stream, edge node, or codec failure rather than local limits or environment.
+func IsRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, errInvalidReservation) || errors.Is(err, errMediaDiskLimit) || errors.Is(err, errMediaAccountingOverflow) || errors.Is(err, io.ErrShortWrite) || errors.Is(err, exec.ErrNotFound) {
+		return false
+	}
+	var permErr permanentMediaError
+	var pathErr *os.PathError
+	var linkErr *os.LinkError
+	var syscallErr *os.SyscallError
+	var execErr *exec.Error
+	if errors.As(err, &permErr) || errors.As(err, &pathErr) || errors.As(err, &linkErr) || errors.As(err, &syscallErr) || errors.As(err, &execErr) {
+		return false
+	}
+	msg := err.Error()
+	for _, phrase := range nonRetryableMediaPhrases {
+		if strings.Contains(msg, phrase) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasASCIIPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+func (p *preparation) sanitizeStderr(raw string) string {
+	text := raw
+	if p != nil && p.dir != "" {
+		text = strings.ReplaceAll(text, p.dir, "[stage]")
+		if slash := filepath.ToSlash(p.dir); slash != p.dir {
+			text = strings.ReplaceAll(text, slash, "[stage]")
+		}
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		matched := ""
+		for _, prefix := range []string{"socks5h://", "socks5://", "https://", "http://"} {
+			if hasASCIIPrefixFold(text[i:], prefix) {
+				matched = prefix
+				break
+			}
+		}
+		if matched != "" {
+			j := i + len(matched)
+			for j < len(text) {
+				r, width := utf8.DecodeRuneInString(text[j:])
+				if unicode.IsSpace(r) || strings.ContainsRune("\"'<>）)", r) {
+					break
+				}
+				j += width
+			}
+			b.WriteString("[url]")
+			i = j
+			continue
+		}
+		_, width := utf8.DecodeRuneInString(text[i:])
+		b.WriteString(text[i : i+width])
+		i += width
+	}
+	text = strings.TrimSpace(b.String())
+	if runes := []rune(text); len(runes) > 600 {
+		text = string(runes[len(runes)-600:])
+	}
+	return text
+}
 
 type probeStream struct {
 	CodecType   string `json:"codec_type"`
@@ -130,12 +264,13 @@ func (p *preparation) probe(ctx context.Context, path string) (probeResult, erro
 			return result, ctx.Err()
 		}
 		if errors.Is(err, exec.ErrNotFound) {
-			return result, errors.New("未安装ffprobe")
+			return result, permanentError(errors.New("未安装ffprobe"))
 		}
+		slog.Warn("ffprobe媒体探测失败", "ext", filepath.Ext(path), "err", err, "stderr", p.sanitizeStderr(stderr.String()))
 		return result, errors.New("ffprobe无法识别媒体或媒体文件已损坏")
 	}
 	if stdout.exceeded {
-		return result, errors.New("ffprobe输出超出限制")
+		return result, permanentError(errors.New("ffprobe输出超出限制"))
 	}
 	if err = json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		return result, errors.New("ffprobe返回无效媒体信息")
@@ -148,11 +283,14 @@ func (p *preparation) probe(ctx context.Context, path string) (probeResult, erro
 		return result, err
 	}
 	if duration > float64(p.cfg.Media.MaxDurationSeconds) {
-		return result, errors.New("媒体实际时长超过限制")
+		return result, permanentError(errors.New("媒体实际时长超过限制"))
 	}
 	if video := result.video(); video != nil {
-		if video.Width < 1 || video.Height < 1 || video.Width > 16384 || video.Height > 16384 || int64(video.Width)*int64(video.Height) > 40_000_000 {
-			return result, errors.New("媒体分辨率超出安全限制")
+		if video.Width < 1 || video.Height < 1 {
+			return result, errors.New("ffprobe返回无效媒体信息")
+		}
+		if video.Width > 16384 || video.Height > 16384 || int64(video.Width)*int64(video.Height) > 40_000_000 {
+			return result, permanentError(errors.New("媒体分辨率超出安全限制"))
 		}
 	}
 	return result, nil
@@ -172,7 +310,7 @@ func (w *mediaWriter) Write(data []byte) (int, error) {
 		return 0, w.failure
 	}
 	if int64(len(data)) > w.limit-w.written {
-		w.failure = errors.New("处理后的媒体超过大小限制")
+		w.failure = permanentError(errors.New("处理后的媒体超过大小限制"))
 		w.cancel()
 		return 0, w.failure
 	}
@@ -226,7 +364,8 @@ func (p *preparation) ffmpeg(ctx context.Context, args []string, extension strin
 	command := exec.CommandContext(ctx, "ffmpeg", commandArgs...)
 	command.Env = processEnv()
 	command.Stdout = writer
-	command.Stderr = &cappedBuffer{limit: 8 << 10}
+	stderr := &cappedBuffer{limit: 8 << 10}
+	command.Stderr = stderr
 	if err = command.Run(); err != nil {
 		if writer.failure != nil {
 			return "", writer.failure
@@ -235,8 +374,9 @@ func (p *preparation) ffmpeg(ctx context.Context, args []string, extension strin
 			return "", ctx.Err()
 		}
 		if errors.Is(err, exec.ErrNotFound) {
-			return "", errors.New("未安装ffmpeg")
+			return "", permanentError(errors.New("未安装ffmpeg"))
 		}
+		slog.Warn("ffmpeg媒体处理失败", "ext", extension, "err", err, "stderr", p.sanitizeStderr(stderr.String()))
 		return "", errors.New("ffmpeg媒体处理失败")
 	}
 	if writer.written == 0 {
@@ -252,33 +392,68 @@ func (p *preparation) ffmpeg(ctx context.Context, args []string, extension strin
 	return path, nil
 }
 
+func (p *preparation) rollbackAttempt(before, beforeHLS int, beforeBytes int64, savedHLSCache map[string]hlsCached) error {
+	p.hlsResources = beforeHLS
+	p.hlsCache = savedHLSCache
+	entries, cleanupErr := os.ReadDir(p.dir)
+	for _, entry := range entries {
+		stem, _, _ := strings.Cut(entry.Name(), ".")
+		sequence, parseErr := strconv.Atoi(stem)
+		if parseErr == nil && sequence > before {
+			cleanupErr = errors.Join(cleanupErr, p.discard(filepath.Join(p.dir, entry.Name())))
+		}
+	}
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	if p.bytes != beforeBytes {
+		return errMediaAccountingOverflow
+	}
+	return nil
+}
+
 func (p *preparation) prepareItem(ctx context.Context, item model.Media, headers map[string]string) (model.Artifact, error) {
 	var empty model.Artifact
 	if item.Kind == "livephoto" {
 		return p.prepareLivePhoto(ctx, item, headers)
 	}
 	if item.URL == "" {
-		return empty, errors.New("媒体缺少下载地址")
+		return empty, permanentError(errors.New("媒体缺少下载地址"))
 	}
-	var input, finalURL string
-	var err error
 	urls := append([]string{item.URL}, item.BackupURLs...)
 	if len(urls) > 9 {
-		return empty, errors.New("媒体备用地址数量超过限制")
+		return empty, permanentError(errors.New("媒体备用地址数量超过限制"))
 	}
+	var lastErr error
 	for _, candidate := range urls {
-		input, finalURL, err = p.download(ctx, candidate, headers, p.hardLimit(), ".bin")
+		before, beforeHLS, beforeBytes := p.sequence, p.hlsResources, p.bytes
+		var savedHLSCache map[string]hlsCached
+		if len(p.hlsCache) > 0 {
+			savedHLSCache = make(map[string]hlsCached, len(p.hlsCache))
+			for k, v := range p.hlsCache {
+				savedHLSCache[k] = v
+			}
+		}
+		input, finalURL, err := p.download(ctx, candidate, headers, p.hardLimit(), ".bin")
+		var artifact model.Artifact
 		if err == nil {
-			break
+			artifact, err = p.prepareDownloaded(ctx, item, input, finalURL, headers, true)
+		}
+		if err == nil {
+			return artifact, nil
+		}
+		if cleanupErr := p.rollbackAttempt(before, beforeHLS, beforeBytes, savedHLSCache); cleanupErr != nil {
+			return empty, errors.Join(err, cleanupErr)
 		}
 		if ctx.Err() != nil {
 			return empty, ctx.Err()
 		}
+		if !IsRetryable(err) {
+			return empty, err
+		}
+		lastErr = err
 	}
-	if err != nil {
-		return empty, err
-	}
-	return p.prepareDownloaded(ctx, item, input, finalURL, headers, true)
+	return empty, lastErr
 }
 
 // prepareLocal accepts only staged media, never a source URL or a remote companion.
@@ -287,7 +462,7 @@ func (p *preparation) prepareLocal(ctx context.Context, item model.Media, input 
 		return model.Artifact{}, err
 	}
 	if item.AudioURL != "" || item.VideoURL != "" || item.Kind == "livephoto" {
-		return model.Artifact{}, errors.New("本地提取媒体不能引用远程伴随媒体")
+		return model.Artifact{}, permanentError(errors.New("本地提取媒体不能引用远程伴随媒体"))
 	}
 	return p.prepareDownloaded(ctx, item, input, "", headers, false)
 }
@@ -309,7 +484,7 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 	hls := bytes.HasPrefix(bytes.TrimSpace(sniff), []byte("#EXTM3U"))
 	if hls {
 		if !remote {
-			return empty, errors.New("提取器必须返回已下载媒体，不能返回播放列表")
+			return empty, permanentError(errors.New("提取器必须返回已下载媒体，不能返回播放列表"))
 		}
 		input, err = p.localizeHLS(ctx, input, finalURL, headers, 0)
 		if err != nil {
@@ -392,7 +567,7 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 		duration = other
 	}
 	if duration <= 0 {
-		return empty, errors.New("无法确定媒体时长，拒绝无法限制的媒体")
+		return empty, permanentError(errors.New("无法确定媒体时长，拒绝无法限制的媒体"))
 	}
 	quality := p.cfg.Media.Quality
 	if quality < 1 {
@@ -413,42 +588,52 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 	}
 	output := input
 	if hls || audioInput != "" || !compatibleVideo || !compatibleAudio || !mp4 || len(info.Streams) != expectedStreams {
-		args := append(inputOptions(input), "-i", input)
-		if audioInput != "" {
-			args = append(args, inputOptions(audioInput)...)
-			args = append(args, "-i", audioInput)
-		}
-		if video != nil {
-			args = append(args, "-map", "0:v:0")
-		}
-		if audio != nil {
+		buildArgs := func(copyAudio bool) []string {
+			args := append(inputOptions(input), "-i", input)
 			if audioInput != "" {
-				args = append(args, "-map", "1:a:0")
-			} else {
-				args = append(args, "-map", "0:a:0")
+				args = append(args, inputOptions(audioInput)...)
+				args = append(args, "-i", audioInput)
 			}
-		}
-		if video != nil {
-			if compatibleVideo {
-				args = append(args, "-c:v", "copy")
-			} else {
-				args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-vf", fmt.Sprintf("scale=w='if(gte(iw,ih),-2,trunc(min(%d,iw)/2)*2)':h='if(gte(iw,ih),trunc(min(%d,ih)/2)*2,-2)'", quality, quality))
+			if video != nil {
+				args = append(args, "-map", "0:v:0")
 			}
-		}
-		if audio != nil {
-			if compatibleAudio {
-				// Fragmented MP4 needs explicit ADTS-to-ASC conversion for HLS AAC.
-				args = append(args, "-c:a", "copy", "-bsf:a", "aac_adtstoasc")
-			} else {
-				args = append(args, "-c:a", "aac", "-b:a", "128k")
+			if audio != nil {
+				if audioInput != "" {
+					args = append(args, "-map", "1:a:0")
+				} else {
+					args = append(args, "-map", "0:a:0")
+				}
 			}
+			if video != nil {
+				if compatibleVideo {
+					args = append(args, "-c:v", "copy")
+				} else {
+					args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-vf", fmt.Sprintf("scale=w='if(gte(iw,ih),-2,trunc(min(%d,iw)/2)*2)':h='if(gte(iw,ih),trunc(min(%d,ih)/2)*2,-2)'", quality, quality))
+				}
+			}
+			if audio != nil {
+				if copyAudio {
+					args = append(args, "-c:a", "copy")
+					if hls || strings.HasSuffix(audioInput, ".m3u8") {
+						// Fragmented MP4 needs explicit ADTS-to-ASC conversion for HLS AAC.
+						args = append(args, "-bsf:a", "aac_adtstoasc")
+					}
+				} else {
+					args = append(args, "-c:a", "aac", "-b:a", "128k")
+				}
+			}
+			args = append(args, "-sn", "-dn", "-map_metadata", "-1", "-max_muxing_queue_size", "1024", "-t", strconv.FormatFloat(float64(p.cfg.Media.MaxDurationSeconds)+0.25, 'f', 2, 64), "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-f", "mp4")
+			return args
 		}
-		args = append(args, "-sn", "-dn", "-map_metadata", "-1", "-max_muxing_queue_size", "1024", "-t", strconv.FormatFloat(float64(p.cfg.Media.MaxDurationSeconds)+0.25, 'f', 2, 64), "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-f", "mp4")
 		extension := ".mp4"
 		if video == nil {
 			extension = ".m4a"
 		}
-		output, err = p.ffmpeg(ctx, args, extension, p.hardLimit())
+		copyAudio := audio != nil && compatibleAudio
+		output, err = p.ffmpeg(ctx, buildArgs(copyAudio), extension, p.hardLimit())
+		if err != nil && copyAudio && ctx.Err() == nil && IsRetryable(err) {
+			output, err = p.ffmpeg(ctx, buildArgs(false), extension, p.hardLimit())
+		}
 		if err != nil {
 			return empty, err
 		}
@@ -487,7 +672,7 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 		return empty, err
 	}
 	if stat.Size() <= 0 || stat.Size() > p.hardLimit() {
-		return empty, errors.New("输出媒体大小超过安全限制")
+		return empty, permanentError(errors.New("输出媒体大小超过安全限制"))
 	}
 	kind := "audio"
 	width, height := 0, 0
@@ -509,7 +694,7 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 	}
 	if stat.Size() > p.cfg.Media.MaxBytes {
 		if p.cfg.Media.OversizeMode != "file" {
-			return empty, errors.New("媒体大小超过发送限制")
+			return empty, permanentError(errors.New("媒体大小超过发送限制"))
 		}
 		kind = "file"
 	}

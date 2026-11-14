@@ -713,10 +713,20 @@ func majorDouyinDetail(detail map[string]any) (*model.ParseResult, error) {
 			if len(display) == 0 {
 				display = image
 			}
-			uri := majorURL(display)
+			urls := majorURLs(display["url_list"])
+			if len(urls) == 0 {
+				urls = majorURLs(display["urlList"])
+			}
+			if len(urls) == 0 {
+				urls = majorURLs(display)
+			}
+			uri := ""
+			if len(urls) > 0 {
+				uri = urls[0]
+			}
 			video := Obj(image["video"])
 			if uri != "" {
-				r.Media = append(r.Media, model.Media{Kind: "image", URL: uri, Width: int(Number(display["width"])), Height: int(Number(display["height"])), Headers: r.Headers})
+				r.Media = append(r.Media, model.Media{Kind: "image", URL: uri, BackupURLs: urls[1:], Width: int(Number(display["width"])), Height: int(Number(display["height"])), Headers: r.Headers})
 			}
 			if len(video) > 0 {
 				m, e := majorDouyinVideo(video, r.Headers)

@@ -3,6 +3,8 @@ package media
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"multiparse/internal/model"
 )
@@ -213,5 +216,99 @@ func TestHLSRejectsUnsafeAndUnboundedManifests(t *testing.T) {
 	}
 	if _, err := p.localizeHLS(context.Background(), path, "https://cdn.example/live.m3u8", nil, 0); err == nil {
 		t.Fatal("over-duration live HLS accepted")
+	}
+}
+func TestDownloadIncompleteContentLengthCleanup(t *testing.T) {
+	p := newPreparation(t)
+	p.client = &http.Client{Transport: fixtureTransport(func(r *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Length", "100")
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Body:          io.NopCloser(bytes.NewReader(bytes.Repeat([]byte{1}, 20))),
+			ContentLength: 100,
+			Header:        header,
+			Request:       r,
+		}, nil
+	})}
+	_, _, err := p.download(context.Background(), "https://cdn.example/truncated.mp4", nil, 1024, ".bin")
+	if err == nil || !strings.Contains(err.Error(), "媒体下载不完整") {
+		t.Fatalf("expected incomplete download error, got: %v", err)
+	}
+	if !IsRetryable(err) {
+		t.Fatalf("incomplete download error must be retryable: %v", err)
+	}
+	if used, usageErr := p.manager.Usage(); usageErr != nil || used != 0 || p.bytes != 0 {
+		t.Fatalf("incomplete download leaked quota: manager=%d prep=%d err=%v", used, p.bytes, usageErr)
+	}
+	entries, readErr := os.ReadDir(p.dir)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("incomplete download left staging files: %v (err=%v)", entries, readErr)
+	}
+}
+func TestIsRetryableAndStderrSanitization(t *testing.T) {
+	nonRetryable := []error{
+		nil,
+		context.Canceled,
+		context.DeadlineExceeded,
+		errInvalidReservation,
+		errMediaDiskLimit,
+		errMediaAccountingOverflow,
+		io.ErrShortWrite,
+		&os.PathError{Op: "open", Path: "/tmp/x", Err: errors.New("permission denied")},
+		&os.LinkError{Op: "rename", Old: "a", New: "b", Err: errors.New("cross-device")},
+		&os.SyscallError{Syscall: "write", Err: errors.New("enospc")},
+		permanentError(errors.New("未安装ffmpeg")),
+		errors.New("媒体实际时长超过限制"),
+		errors.New("GIF时长超过限制"),
+		errors.New("HLS总时长超过限制"),
+		errors.New("媒体超过下载上限 1024 字节；可提高限制或使用file模式"),
+		errors.New("处理后的媒体超过大小限制"),
+		errors.New("媒体大小超过发送限制"),
+		errors.New("图片像素数量超过安全限制"),
+		errors.New("媒体分辨率超出安全限制"),
+		fmt.Errorf("图片数量超过限制 %d", 9),
+		errors.New("提取媒体路径越界"),
+	}
+	for _, err := range nonRetryable {
+		if IsRetryable(err) {
+			t.Errorf("expected non-retryable error, got true for: %v", err)
+		}
+	}
+	retryable := []error{
+		errors.New("媒体下载失败（目标、DNS、代理或平台策略拒绝）"),
+		errors.New("媒体下载返回HTTP 502"),
+		errors.New("媒体流读取失败"),
+		errors.New("媒体内容为空"),
+		errors.New("媒体下载不完整（预期 100 字节，实际 20 字节）"),
+		errors.New("媒体地址返回文本而非实际媒体"),
+		errors.New("ffprobe无法识别媒体或媒体文件已损坏"),
+		errors.New("ffprobe返回无效媒体信息"),
+		errors.New("媒体流数量无效"),
+		errors.New("下载内容不含音视频"),
+		errors.New("ffmpeg媒体处理失败"),
+		errors.New("ffmpeg未产生媒体"),
+		fmt.Errorf("生成视频封面失败: %w", errors.New("ffmpeg媒体处理失败")),
+		errors.New("图片头无效或格式不支持"),
+		errors.New("图片数据损坏"),
+		errors.New("图片地址实际返回非图片媒体"),
+		errors.New("HLS片段不是二进制媒体"),
+	}
+	for _, err := range retryable {
+		if !IsRetryable(err) {
+			t.Errorf("expected retryable error, got false for: %v", err)
+		}
+	}
+	p := newPreparation(t)
+	raw := "  " + strings.Repeat("前序噪音", 200) + " open " + p.dir + "/0001.bin from https://cdn.example/v.mp4?sig=secret via socks5h://user:pass@127.0.0.1:1080 failed: Invalid data found  \n"
+	sanitized := p.sanitizeStderr(raw)
+	if strings.Contains(sanitized, p.dir) || strings.Contains(sanitized, "sig=secret") || strings.Contains(sanitized, "user:pass") {
+		t.Fatalf("stderr leaked sensitive path or URL: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "[stage]/0001.bin") || !strings.Contains(sanitized, "[url]") || !strings.HasSuffix(sanitized, "Invalid data found") {
+		t.Fatalf("unexpected sanitized stderr: %q", sanitized)
+	}
+	if utf8.RuneCountInString(sanitized) != 600 {
+		t.Fatalf("expected tail 600 runes, got %d", utf8.RuneCountInString(sanitized))
 	}
 }

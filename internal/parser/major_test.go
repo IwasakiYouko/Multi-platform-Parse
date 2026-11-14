@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -348,5 +349,151 @@ func TestMajorDouyinMobileSignVectorsAndFallback403(t *testing.T) {
 	}
 	if len(res.Media) != 1 || res.Media[0].URL != "https://cdn.example/play/story_1080p.mp4" || len(res.Media[0].BackupURLs) == 0 || res.Media[0].BackupURLs[0] != "https://cdn.example/play/low.mp4" || res.Author != "Author" {
 		t.Fatalf("unexpected mobile fallback result: %#v", res)
+	}
+}
+func TestMajorBiliSignWBIVectors(t *testing.T) {
+	const (
+		imgKey   = "7cd084941338484aae1ad9425b84077c"
+		subKey   = "4932caff0ff746eab6f01bf08b70ac45"
+		wantMix  = "ea1db124af3c7062474693fa704f4ff8"
+		wantWRid = "6149fdadf571698ca7e6a567265cd0ee"
+	)
+	mixinKey, err := majorBiliWBIMixinKey(
+		"https://i0.hdslb.com/bfs/wbi/"+imgKey+".png",
+		"https://i0.hdslb.com/bfs/wbi/"+subKey+".png",
+	)
+	if err != nil || mixinKey != wantMix {
+		t.Fatalf("majorBiliWBIMixinKey = (%q, %v), want %q", mixinKey, err, wantMix)
+	}
+	params := url.Values{
+		"foo": {"114"},
+		"bar": {"514"},
+		"baz": {"1919810"},
+	}
+	signed := majorBiliSignWBI(params, mixinKey, 1702204169)
+	if params.Get("wts") != "" {
+		t.Fatal("majorBiliSignWBI mutated caller url.Values")
+	}
+	wantQuery := "bar=514&baz=1919810&foo=114&wts=1702204169&w_rid=" + wantWRid
+	if signed != wantQuery {
+		t.Fatalf("majorBiliSignWBI = %q, want %q", signed, wantQuery)
+	}
+	special := url.Values{"chr": {"a b!'()*c/d"}}
+	signedSpecial := majorBiliSignWBI(special, mixinKey, 1700000000)
+	prefix := "chr=a%20bc%2Fd&wts=1700000000"
+	sum := md5.Sum([]byte(prefix + mixinKey))
+	wantSpecial := prefix + "&w_rid=" + hex.EncodeToString(sum[:])
+	if signedSpecial != wantSpecial {
+		t.Fatalf("majorBiliSignWBI special = %q, want %q", signedSpecial, wantSpecial)
+	}
+}
+func TestMajorBilibiliWBIFallbackWithAnonymousNav(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		primaryBody string
+	}{
+		{"playurl_error_404", `{"code":-404,"message":"啥都木有"}`},
+		{"playurl_empty_tracks", `{"code":0,"data":{"dash":{"duration":15,"video":[]}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const (
+				imgKey  = "7cd084941338484aae1ad9425b84077c"
+				subKey  = "4932caff0ff746eab6f01bf08b70ac45"
+				wantMix = "ea1db124af3c7062474693fa704f4ff8"
+			)
+			navCalled, wbiCalled := false, false
+			client := &http.Client{Transport: majorTestTransport(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.Path {
+				case "/x/web-interface/view":
+					return majorTestResponse(r, `{"code":0,"data":{"bvid":"BV1xx411c7mD","title":"WBI Fallback","desc":"Desc","owner":{"name":"UP"},"cid":99,"pages":[{"page":1,"cid":99,"duration":15}]}}`), nil
+				case "/x/frontend/finger/spi":
+					return majorTestResponse(r, `{"code":0,"data":{"b_3":"anon3","b_4":"anon4"}}`), nil
+				case "/x/player/playurl":
+					return majorTestResponse(r, tc.primaryBody), nil
+				case "/x/web-interface/nav":
+					navCalled = true
+					return majorTestResponse(r, `{"code":-101,"message":"账号未登录","data":{"isLogin":false,"wbi_img":{"img_url":"https://i0.hdslb.com/bfs/wbi/`+imgKey+`.png","sub_url":"https://i0.hdslb.com/bfs/wbi/`+subKey+`.png"}}}`), nil
+				case "/x/player/wbi/playurl":
+					wbiCalled = true
+					q := r.URL.Query()
+					wtsRaw := q.Get("wts")
+					wts, parseErr := strconv.ParseInt(wtsRaw, 10, 64)
+					if parseErr != nil || wts <= 0 {
+						t.Errorf("invalid wts on wbi/playurl: %q", wtsRaw)
+						return majorTestResponse(r, `{"code":-400,"message":"bad wts"}`), nil
+					}
+					unsigned := url.Values{
+						"bvid":  {"BV1xx411c7mD"},
+						"cid":   {"99"},
+						"qn":    {"80"},
+						"fnval": {"4048"},
+						"fnver": {"0"},
+						"fourk": {"1"},
+					}
+					wantRawQuery := majorBiliSignWBI(unsigned, wantMix, wts)
+					if r.URL.RawQuery != wantRawQuery {
+						t.Errorf("wbi query mismatch:\n got: %s\nwant: %s", r.URL.RawQuery, wantRawQuery)
+						return majorTestResponse(r, `{"code":-403,"message":"bad w_rid"}`), nil
+					}
+					return majorTestResponse(r, `{"code":0,"data":{"dash":{"duration":15,"video":[{"baseUrl":"https://cdn.bilivideo.com/wbi-video.m4s","backupUrl":["https://upos.bilivideo.com/wbi-video-b1.m4s"],"codecs":"avc1.640028","bandwidth":200,"width":1920,"height":1080}],"audio":[{"baseUrl":"https://cdn.bilivideo.com/wbi-audio.m4s","codecs":"mp4a.40.2","bandwidth":128000}]}}}`), nil
+				default:
+					t.Errorf("unexpected request: %s", r.URL)
+					return majorTestResponse(r, `{"code":-404}`), nil
+				}
+			})}
+			res, err := majorBilibili(context.Background(), client, "https://www.bilibili.com/video/BV1xx411c7mD", "")
+			if err != nil {
+				t.Fatalf("expected WBI fallback to succeed: %v", err)
+			}
+			if !navCalled || !wbiCalled {
+				t.Fatalf("expected both nav and wbi/playurl to be called: nav=%v wbi=%v", navCalled, wbiCalled)
+			}
+			if len(res.Media) != 1 || res.Media[0].URL != "https://cdn.bilivideo.com/wbi-video.m4s" || res.Media[0].AudioURL != "https://cdn.bilivideo.com/wbi-audio.m4s" || len(res.Media[0].BackupURLs) != 1 {
+				t.Fatalf("unexpected WBI fallback media: %#v", res)
+			}
+		})
+	}
+}
+func TestMajorDouyinDetailPreservesImageBackupURLs(t *testing.T) {
+	detail := map[string]any{
+		"aweme_id": "456",
+		"desc":     "Image backups",
+		"author":   map[string]any{"nickname": "Tester"},
+		"images": []any{
+			map[string]any{
+				"url_list": []any{"https://cdn1.example/1.webp", "https://cdn2.example/1.webp", "https://cdn3.example/1.jpeg"},
+				"width":    1080,
+				"height":   1440,
+			},
+			map[string]any{
+				"display_image": map[string]any{
+					"urlList": []any{"https://cdn1.example/2.webp", "https://cdn2.example/2.jpeg"},
+					"width":   720,
+					"height":  960,
+				},
+				"video": map[string]any{
+					"play_addr": map[string]any{
+						"url_list": []any{"https://cdn1.example/playwm/2.mp4", "https://cdn2.example/playwm/2.mp4"},
+					},
+					"duration": 2500,
+				},
+			},
+		},
+	}
+	r, err := majorDouyinDetail(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Media) != 3 {
+		t.Fatalf("expected 3 media items, got %d: %#v", len(r.Media), r.Media)
+	}
+	if r.Media[0].Kind != "image" || r.Media[0].URL != "https://cdn1.example/1.webp" || len(r.Media[0].BackupURLs) != 2 || r.Media[0].BackupURLs[0] != "https://cdn2.example/1.webp" || r.Media[0].BackupURLs[1] != "https://cdn3.example/1.jpeg" {
+		t.Fatalf("first image BackupURLs lost: %#v", r.Media[0])
+	}
+	if r.Media[1].Kind != "image" || r.Media[1].URL != "https://cdn1.example/2.webp" || len(r.Media[1].BackupURLs) != 1 || r.Media[1].BackupURLs[0] != "https://cdn2.example/2.jpeg" {
+		t.Fatalf("live photo still image BackupURLs lost: %#v", r.Media[1])
+	}
+	if r.Media[2].Kind != "video" || r.Media[2].URL != "https://cdn1.example/play/2.mp4" || len(r.Media[2].BackupURLs) != 1 || r.Media[2].BackupURLs[0] != "https://cdn2.example/play/2.mp4" {
+		t.Fatalf("live photo video BackupURLs lost: %#v", r.Media[2])
 	}
 }

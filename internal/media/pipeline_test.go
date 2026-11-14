@@ -1,7 +1,10 @@
 package media
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,5 +80,138 @@ func TestNativeLocalizedHLSPipeline(t *testing.T) {
 	}
 	if info.video() == nil || info.video().CodecName != "h264" || info.audio() == nil || info.audio().CodecName != "aac" {
 		t.Fatalf("incompatible HLS codecs: %+v", info.Streams)
+	}
+}
+func TestPrepareItemFallbackOnCorruptPrimaryWithoutQuotaLeak(t *testing.T) {
+	valid := generateMedia(t, "valid.mp4", "-f", "lavfi", "-i", "color=c=blue:s=64x48:r=10:d=1.0", "-f", "lavfi", "-i", "sine=frequency=440:duration=1.0", "-c:v", "mpeg4", "-c:a", "aac", "-shortest", "-movflags", "+faststart")
+	mdatIdx := bytes.Index(valid, []byte("mdat"))
+	if mdatIdx <= 0 {
+		t.Fatal("faststart fixture missing mdat box")
+	}
+	truncatedAfterMoov := append([]byte(nil), valid[:mdatIdx+8]...)
+	h264Faststart := generateMedia(t, "h264.mp4", "-f", "lavfi", "-i", "color=c=red:s=64x48:r=10:d=1.0", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart")
+	h264Mdat := bytes.Index(h264Faststart, []byte("mdat"))
+	if h264Mdat <= 0 {
+		t.Fatal("h264 faststart fixture missing mdat box")
+	}
+	// avcC in moov satisfies ffprobe (64x48 yuv420p), while empty mdat fails later during ffmpeg thumbnail extraction.
+	truncatedH264 := append([]byte(nil), h264Faststart[:h264Mdat+8]...)
+	corruptHeader := []byte("0000corrupt-mp4-payload")
+
+	p := newPreparation(t)
+	hits := map[string]int{}
+	p.client = &http.Client{Transport: fixtureTransport(func(r *http.Request) (*http.Response, error) {
+		hits[r.URL.Path]++
+		switch r.URL.Path {
+		case "/corrupt.mp4":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(corruptHeader)), ContentLength: -1, Header: make(http.Header), Request: r}, nil
+		case "/truncated.mp4":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(truncatedAfterMoov)), ContentLength: -1, Header: make(http.Header), Request: r}, nil
+		case "/truncated-h264.mp4":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(truncatedH264)), ContentLength: -1, Header: make(http.Header), Request: r}, nil
+		case "/backup.mp4":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(valid)), ContentLength: int64(len(valid)), Header: make(http.Header), Request: r}, nil
+		default:
+			return &http.Response{StatusCode: 404, Body: io.NopCloser(bytes.NewReader(nil)), ContentLength: 0, Header: make(http.Header), Request: r}, nil
+		}
+	})}
+	artifact, err := p.prepareItem(context.Background(), model.Media{
+		Kind:       "video",
+		URL:        "https://cdn1.example/corrupt.mp4",
+		BackupURLs: []string{"https://cdn2.example/truncated.mp4", "https://cdn3.example/truncated-h264.mp4", "https://cdn4.example/backup.mp4"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("prepareItem failed to fallback to valid backup URL: %v", err)
+	}
+	if hits["/corrupt.mp4"] != 1 || hits["/truncated.mp4"] != 1 || hits["/truncated-h264.mp4"] != 1 || hits["/backup.mp4"] != 1 {
+		t.Fatalf("unexpected candidate hit counts: %+v", hits)
+	}
+	if artifact.Kind != "video" || artifact.ThumbPath == "" || artifact.Size <= 0 {
+		t.Fatalf("invalid fallback artifact: %+v", artifact)
+	}
+	info, err := p.probe(context.Background(), artifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.video() == nil || info.video().CodecName != "h264" || info.video().PixelFormat != "yuv420p" || info.audio() == nil || info.audio().CodecName != "aac" {
+		t.Fatalf("incompatible fallback codecs: %+v", info.Streams)
+	}
+	videoStat, err := os.Stat(artifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbStat, err := os.Stat(artifact.ThumbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(p.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("failed attempt left temporary files in stage dir: %v", names)
+	}
+	wantBytes := videoStat.Size() + thumbStat.Size()
+	used, err := p.manager.Usage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != wantBytes || p.bytes != wantBytes {
+		t.Fatalf("disk accounting mismatch: used=%d prep=%d want=%d", used, p.bytes, wantBytes)
+	}
+}
+func TestPrepareItemDoesNotFallbackOnNonRetryableError(t *testing.T) {
+	overDuration := generateMedia(t, "long.mp4", "-f", "lavfi", "-i", "color=c=black:s=64x48:r=5:d=2.2", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p")
+	p := newPreparation(t)
+	p.cfg.Media.MaxDurationSeconds = 1
+	hits := map[string]int{}
+	p.client = &http.Client{Transport: fixtureTransport(func(r *http.Request) (*http.Response, error) {
+		hits[r.URL.Path]++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(overDuration)), ContentLength: int64(len(overDuration)), Header: make(http.Header), Request: r}, nil
+	})}
+	_, err := p.prepareItem(context.Background(), model.Media{
+		Kind:       "video",
+		URL:        "https://cdn1.example/long.mp4",
+		BackupURLs: []string{"https://cdn2.example/backup.mp4"},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected duration limit error")
+	}
+	if IsRetryable(err) {
+		t.Fatalf("duration limit error must not be retryable: %v", err)
+	}
+	if hits["/long.mp4"] != 1 || hits["/backup.mp4"] != 0 {
+		t.Fatalf("non-retryable error must not request BackupURLs: %+v", hits)
+	}
+	if used, _ := p.manager.Usage(); used != 0 || p.bytes != 0 {
+		t.Fatalf("non-retryable rollback leaked quota: used=%d prep=%d", used, p.bytes)
+	}
+	if entries, _ := os.ReadDir(p.dir); len(entries) != 0 {
+		t.Fatalf("non-retryable rollback left files: %v", entries)
+	}
+}
+func TestPrepareDownloadedAudioCopyFallbackToAAC(t *testing.T) {
+	// Non-HLS MPEG-TS carries ADTS AAC: stream-copying audio without aac_adtstoasc into MP4 fails first, exercising the -c:a aac fallback.
+	mpegts := generateMedia(t, "adts.ts", "-f", "lavfi", "-i", "color=c=green:s=64x48:r=5:d=0.6", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.6", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-f", "mpegts")
+	p := newPreparation(t)
+	p.client = fixtureClient(map[string][]byte{"/adts.ts": mpegts})
+	artifact, err := p.prepareItem(context.Background(), model.Media{Kind: "video", URL: "https://cdn.example/adts.ts"}, nil)
+	if err != nil {
+		t.Fatalf("audio copy -> AAC fallback failed: %v", err)
+	}
+	videoStat, err := os.Stat(artifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbStat, err := os.Stat(artifact.ThumbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used, _ := p.manager.Usage(); used != videoStat.Size()+thumbStat.Size() {
+		t.Fatalf("audio fallback leaked quota: used=%d want=%d", used, videoStat.Size()+thumbStat.Size())
 	}
 }

@@ -4,12 +4,16 @@ package parser
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"multiparse/internal/model"
 )
@@ -19,6 +23,13 @@ func init() { Register("bilibili", majorBilibili) }
 var majorBiliBV = regexp.MustCompile(`(?i)BV[0-9a-z]{10}`)
 var majorBiliAV = regexp.MustCompile(`(?i)(?:^|/)av([0-9]+)(?:/|$)`)
 var majorBiliDynamicID = regexp.MustCompile(`/(?:opus/|dynamic/)?([0-9]{15,22})(?:[/?#]|$)`)
+var majorBiliWBIMixinTab = [64]int{
+	46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+	27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+	37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+	22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+}
+var majorBiliWBIFilter = strings.NewReplacer("!", "", "'", "", "(", "", ")", "", "*", "")
 
 func majorBiliAPI(ctx context.Context, c *http.Client, endpoint, cookie, referer string) (map[string]any, error) {
 	var response map[string]any
@@ -178,6 +189,14 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	playQuery.Set("fnver", "0")
 	playQuery.Set("fourk", "1")
 	play, err := majorBiliAPI(ctx, c, "https://api.bilibili.com/x/player/playurl?"+playQuery.Encode(), cookie, raw)
+	if (err != nil || !majorBiliHasPlayableStream(play)) && ctx.Err() == nil {
+		wbiPlay, wbiErr := majorBiliWBI(ctx, c, playQuery, cookie, raw)
+		if wbiErr == nil && (majorBiliHasPlayableStream(wbiPlay) || err != nil) {
+			play, err = wbiPlay, nil
+		} else if err != nil && wbiErr != nil && wbiErr.Error() != err.Error() {
+			return nil, fmt.Errorf("%w（WBI回退失败: %v）", err, wbiErr)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +245,91 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 		return nil, fmt.Errorf("哔哩哔哩未提供播放地址，作品可能受登录、付费或地区限制")
 	}
 	return r, nil
+}
+func majorBiliHasPlayableStream(play map[string]any) bool {
+	if len(play) == 0 {
+		return false
+	}
+	if dash := Obj(play["dash"]); len(dash) > 0 {
+		return majorBiliTrack(Array(dash["video"]), true) != nil
+	}
+	for _, item := range Array(play["durl"]) {
+		if majorURL(Obj(item)["url"]) != "" {
+			return true
+		}
+	}
+	return false
+}
+func majorBiliWBIStem(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.Path != "" {
+		raw = u.Path
+	}
+	if i := strings.LastIndexByte(raw, '/'); i >= 0 {
+		raw = raw[i+1:]
+	}
+	if i := strings.IndexByte(raw, '.'); i >= 0 {
+		raw = raw[:i]
+	}
+	return raw
+}
+func majorBiliWBIMixinKey(imgURL, subURL string) (string, error) {
+	imgKey := majorBiliWBIStem(imgURL)
+	subKey := majorBiliWBIStem(subURL)
+	if imgKey == "" || subKey == "" {
+		return "", fmt.Errorf("bilibili nav 缺少 wbi_img")
+	}
+	rawKey := imgKey + subKey
+	if len(rawKey) < 64 {
+		return "", fmt.Errorf("bilibili wbi 密钥长度不足")
+	}
+	var mixed [32]byte
+	for i := range mixed {
+		mixed[i] = rawKey[majorBiliWBIMixinTab[i]]
+	}
+	return string(mixed[:]), nil
+}
+func majorBiliSignWBI(params url.Values, mixinKey string, wts int64) string {
+	copied := make(url.Values, len(params)+1)
+	for k, v := range params {
+		copied[k] = append([]string(nil), v...)
+	}
+	copied.Set("wts", strconv.FormatInt(wts, 10))
+	keys := make([]string, 0, len(copied))
+	for k := range copied {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		filtered := majorBiliWBIFilter.Replace(copied.Get(k))
+		ek := strings.ReplaceAll(url.QueryEscape(k), "+", "%20")
+		ev := strings.ReplaceAll(url.QueryEscape(filtered), "+", "%20")
+		parts = append(parts, ek+"="+ev)
+	}
+	encodedQuery := strings.Join(parts, "&")
+	sum := md5.Sum([]byte(encodedQuery + mixinKey))
+	wRid := hex.EncodeToString(sum[:])
+	return encodedQuery + "&w_rid=" + wRid
+}
+func majorBiliWBI(ctx context.Context, c *http.Client, playQuery url.Values, cookie, referer string) (map[string]any, error) {
+	const navEndpoint = "https://api.bilibili.com/x/web-interface/nav"
+	var nav map[string]any
+	if err := JSON(ctx, c, navEndpoint, majorHeaders(cookie, referer, navEndpoint, "bilibili.com"), &nav); err != nil {
+		return nil, err
+	}
+	wbiImg := Obj(Path(nav, "data", "wbi_img"))
+	mixinKey, err := majorBiliWBIMixinKey(Text(wbiImg["img_url"]), Text(wbiImg["sub_url"]))
+	if err != nil {
+		if code := Number(nav["code"]); code != 0 && code != -101 {
+			return nil, fmt.Errorf("哔哩哔哩: code %.0f %s", code, Text(nav["message"]))
+		}
+		return nil, err
+	}
+	signedQuery := majorBiliSignWBI(playQuery, mixinKey, time.Now().Unix())
+	return majorBiliAPI(ctx, c, "https://api.bilibili.com/x/player/wbi/playurl?"+signedQuery, cookie, referer)
 }
 func majorBiliTrack(tracks []any, video bool) map[string]any {
 	var best map[string]any
