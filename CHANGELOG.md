@@ -1,5 +1,12 @@
 # 变更记录
 
+## 1.2.2
+
+- 校验 HTTP 媒体下载 `Content-Length` 完整性，拦截 CDN 边缘节点提前断开导致的残缺流，避免进入 FFmpeg 全片转码后快速报错。
+- 将 `ffprobe` / `ffmpeg` 处理纳入 `BackupURLs` 备用节点回退循环并精确回滚失败尝试的临时文件与磁盘配额；仅在 HLS 输入附加 `aac_adtstoasc`，音频流直拷失败时自动降级重试 AAC 转码，并输出路径与 URL 脱敏的 `stderr` 告警日志；补齐抖音图文与实况照片的备用 CDN 地址。
+- 任务层在远端媒体流处理失败时支持 singleflight 锁内单次重新解析（轮换虚拟设备与签名 CDN 节点）自愈重试。
+- 为哔哩哔哩播放地址补充 WBI 签名回退（`/x/web-interface/nav` + `/x/player/wbi/playurl`），兼容未登录态 `code == -101` 返回的 `wbi_img` 密钥。
+
 ## 1.2.1
 
 - 补齐抖音移动端 App 协议签名（`X-Gorgon` / `X-Khronos` / `X-Ladon` / `X-Argus`）、虚拟 Android 设备池自动注册与日常（Story）高清直链探测，修复无 Cookie 或网页端 `aweme/detail` 返回 HTTP 403 时的解析失败，并修正网页端签名参数顺序；保留哔哩哔哩既有解析逻辑与小红书无水印原图解析。
