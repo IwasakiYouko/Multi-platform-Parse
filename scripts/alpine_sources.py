@@ -2,19 +2,21 @@
 """Bundle exact Alpine corresponding sources for copyleft packages in an image.
 
 Reads alpine-packages.tsv (binary, version, origin, commit, license) exported from
-/lib/apk/db/installed, fetches the exact aports directory at each pinned commit and
-upstream distfiles from Alpine's official distfiles mirrors, verifies every file's
-SHA-512 against APKBUILD, and emits a deterministic source tarball + manifest.
+/lib/apk/db/installed, fetches the exact aports directory at each pinned commit via
+Git smart HTTP (primary: github.com/alpinelinux/aports.git, fallback:
+gitlab.alpinelinux.org/alpine/aports.git) plus upstream distfiles from Alpine's
+official distfiles mirrors, verifies every file's SHA-512 against APKBUILD, and
+emits a deterministic source tarball + manifest.
 """
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import gzip
 import hashlib
-import io
 import json
 from pathlib import Path
 import re
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -23,7 +25,10 @@ import urllib.parse
 import urllib.request
 
 
-APORTS_ARCHIVE_BASE = "https://gitlab.alpinelinux.org/alpine/aports/-/archive"
+APORTS_GIT_REMOTES = (
+    "https://github.com/alpinelinux/aports.git",
+    "https://gitlab.alpinelinux.org/alpine/aports.git",
+)
 DISTFILES_MIRRORS = (
     "https://distfiles.alpinelinux.org/distfiles/v3.24",
     "https://distfiles.alpinelinux.org/distfiles/edge",
@@ -114,30 +119,110 @@ def parse_apkbuild_sha512sums(apkbuild_text):
     return entries
 
 
-def fetch_aports_dir(origin, commit, dest_dir):
-    for repo in ("main", "community"):
-        url = f"{APORTS_ARCHIVE_BASE}/{commit}/aports-{commit}.tar.gz?path={repo}/{origin}"
+def parse_cat_file_batch(raw_bytes, expected_shas):
+    blobs = {}
+    offset = 0
+    total = len(raw_bytes)
+    for expected in expected_shas:
+        nl = raw_bytes.find(b"\n", offset)
+        if nl < 0:
+            raise ValueError(f"Truncated git cat-file header for {expected}")
+        header = raw_bytes[offset:nl].decode("ascii")
+        parts = header.split()
+        if len(parts) != 3 or parts[0] != expected or parts[1] != "blob":
+            raise ValueError(f"Unexpected git cat-file header: {header!r}")
+        size = int(parts[2])
+        start = nl + 1
+        end = start + size
+        if end + 1 > total or raw_bytes[end:end + 1] != b"\n":
+            raise ValueError(f"Truncated git cat-file payload for {expected}")
+        blobs[expected] = raw_bytes[start:end]
+        offset = end + 1
+    if offset != total:
+        raise ValueError("Unexpected trailing bytes in git cat-file output")
+    return blobs
+
+
+def run_git_fetch(repo_dir, remote, objects, extra_args=(), attempts=3, delay=2.0):
+    if not remote.startswith("https://"):
+        raise ValueError(f"Refusing non-HTTPS git remote: {remote}")
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "fetch", "--quiet", "--no-write-fetch-head", *extra_args, remote, *objects],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if proc.returncode == 0:
+            return
+        last_err = RuntimeError(f"git fetch from {remote} failed (rc={proc.returncode}): {proc.stderr.strip()}")
+        if attempt < attempts:
+            time.sleep(delay * attempt)
+    raise last_err
+
+
+def prefetch_aports_dirs(entries):
+    commits = sorted({entry["commit"] for entry in entries})
+    last_err = None
+    for remote in APORTS_GIT_REMOTES:
         try:
-            with open_url(url) as response:
-                archive_bytes = response.read()
-        except urllib.error.HTTPError as err:
-            if err.code == 404:
-                continue
-            raise
-        if not archive_bytes:
-            continue
-        extracted = {}
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as bundle:
-            for member in bundle.getmembers():
-                if not member.isfile():
-                    continue
-                fname = safe_name(Path(member.name).name)
-                payload = bundle.extractfile(member).read()
-                (dest_dir / fname).write_bytes(payload)
-                extracted[fname] = payload
-        if "APKBUILD" in extracted:
-            return repo, url, extracted
-    raise ValueError(f"Could not locate {origin} at commit {commit} in Alpine aports")
+            with tempfile.TemporaryDirectory(prefix="aports-git-") as tmp:
+                repo_dir = Path(tmp) / "repo"
+                subprocess.run(["git", "init", "-q", str(repo_dir)], check=True, timeout=30)
+                run_git_fetch(repo_dir, remote, commits, extra_args=("--depth=1", "--filter=blob:none"))
+
+                pkg_trees = {}
+                needed_blobs = set()
+                for entry in entries:
+                    origin, commit = entry["origin"], entry["commit"]
+                    for section in ("main", "community"):
+                        out = subprocess.check_output(
+                            ["git", "-C", str(repo_dir), "ls-tree", commit, f"{section}/{origin}/"],
+                            text=True,
+                            timeout=30,
+                        )
+                        if not out.strip():
+                            continue
+                        file_shas = []
+                        for line in out.splitlines():
+                            meta, rel_path = line.split("\t", 1)
+                            _mode, obj_type, sha = meta.split()
+                            if obj_type == "blob":
+                                fname = safe_name(Path(rel_path).name)
+                                file_shas.append((fname, sha))
+                                needed_blobs.add(sha)
+                        if any(fname == "APKBUILD" for fname, _ in file_shas):
+                            pkg_trees[origin] = (section, f"{remote}@{commit}:{section}/{origin}", file_shas)
+                            break
+                    if origin not in pkg_trees:
+                        raise ValueError(f"Could not locate {origin} at commit {commit} in {remote}")
+
+                ordered_shas = sorted(needed_blobs)
+                # Batch-fetch all required APKBUILD and patch blobs in chunks so command lines stay compact.
+                for idx in range(0, len(ordered_shas), 200):
+                    run_git_fetch(repo_dir, remote, ordered_shas[idx:idx + 200])
+
+                cat_proc = subprocess.run(
+                    ["git", "-C", str(repo_dir), "cat-file", "--batch"],
+                    input=("".join(f"{sha}\n" for sha in ordered_shas)).encode("ascii"),
+                    capture_output=True,
+                    check=True,
+                    timeout=60,
+                )
+                blob_bytes = parse_cat_file_batch(cat_proc.stdout, ordered_shas)
+
+                resolved = {}
+                for origin, (section, source_ref, file_shas) in pkg_trees.items():
+                    resolved[origin] = (
+                        section,
+                        source_ref,
+                        {fname: blob_bytes[sha] for fname, sha in file_shas},
+                    )
+                return resolved
+        except Exception as err:  # noqa: BLE001 - fall back to secondary official aports Git mirror
+            last_err = err
+    raise RuntimeError(f"Unable to fetch Alpine aports commits from any configured Git mirror: {last_err}") from last_err
 
 
 def download_distfile(fname, expected_sha512, destination):
@@ -173,16 +258,18 @@ def download_distfile(fname, expected_sha512, destination):
     raise ValueError(f"Distfile {fname} not found on Alpine mirrors") from last_err
 
 
-def bundle_origin(entry, work_root):
+def bundle_origin(entry, aports_data, work_root):
     origin = entry["origin"]
     pkg_dir = work_root / f"{origin}-{entry['version']}"
     pkg_dir.mkdir(parents=True, exist_ok=True)
-    repo, aports_url, local_files = fetch_aports_dir(origin, entry["commit"], pkg_dir)
+    repo, aports_url, local_files = aports_data
+    for fname, payload in sorted(local_files.items()):
+        (pkg_dir / safe_name(fname)).write_bytes(payload)
+
     apkbuild_text = local_files["APKBUILD"].decode("utf-8", "replace")
     checksums = parse_apkbuild_sha512sums(apkbuild_text)
 
     verified_files = []
-    # Include APKBUILD itself in manifest
     apkbuild_bytes = local_files["APKBUILD"]
     verified_files.append({
         "name": "APKBUILD",
@@ -216,7 +303,7 @@ def bundle_origin(entry, work_root):
         "repository": repo,
         "license": entry["license"],
         "binaries": entry["binaries"],
-        "aports_archive": aports_url,
+        "aports_source": aports_url,
         "files": verified_files,
     }
 
@@ -261,12 +348,13 @@ def write_archives(source_root, output_dir, release_tag, part_bytes=PART_BYTES):
 
 def build_bundle(inventory_path, output_dir, release_tag, workers=6):
     entries = parse_inventory(inventory_path)
+    aports_map = prefetch_aports_dirs(entries)
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="alpine-sources-") as tmp:
         work_root = Path(tmp) / "tree"
         work_root.mkdir()
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            packages = list(pool.map(lambda item: bundle_origin(item, work_root), entries))
+            packages = list(pool.map(lambda item: bundle_origin(item, aports_map[item["origin"]], work_root), entries))
         archives = write_archives(work_root, output_dir, release_tag)
 
     manifest = {

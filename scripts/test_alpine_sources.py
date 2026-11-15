@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -48,8 +49,19 @@ class AlpineSourcesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid or duplicate"):
             alpine_sources.parse_apkbuild_sha512sums('sha512sums="1234  demo.tar.xz"')
 
-    def test_build_bundle_verifies_aports_and_distfiles_sha512(self):
-        commit = "c" * 40
+    def test_parse_cat_file_batch_handles_binary_blobs_with_newlines(self):
+        sha1 = "1" * 40
+        sha2 = "2" * 40
+        p1 = b"line1\nline2\x00\n"
+        p2 = b"APKBUILD"
+        stream = (
+            f"{sha1} blob {len(p1)}\n".encode() + p1 + b"\n"
+            + f"{sha2} blob {len(p2)}\n".encode() + p2 + b"\n"
+        )
+        parsed = alpine_sources.parse_cat_file_batch(stream, [sha1, sha2])
+        self.assertEqual(parsed, {sha1: p1, sha2: p2})
+
+    def test_prefetch_aports_dirs_fetches_from_local_git_remote_when_patched(self):
         dist_payload = b"upstream-gpl-tarball-bytes"
         patch_payload = b"--- a/main.c\n+++ b/main.c\n"
         dist_sha512 = hashlib.sha512(dist_payload).hexdigest()
@@ -59,28 +71,40 @@ class AlpineSourcesTests(unittest.TestCase):
             f'sha512sums="\n{dist_sha512}  demo-1.0.tar.xz\n{patch_sha512}  fix.patch\n"\n'
         ).encode()
 
-        aports_buf = io.BytesIO()
-        with tarfile.open(fileobj=aports_buf, mode="w:gz") as tf:
-            for name, payload in (("APKBUILD", apkbuild_payload), ("fix.patch", patch_payload)):
-                info = tarfile.TarInfo(name=f"aports-{commit}/main/demo/{name}")
-                info.size = len(payload)
-                tf.addfile(info, io.BytesIO(payload))
-        aports_bytes = aports_buf.getvalue()
-
-        def fake_open_url(url, *args, **kwargs):
-            if "aports-" in url:
-                return Response(aports_bytes, url=url)
-            if url.endswith("/demo-1.0.tar.xz"):
-                return Response(dist_payload, url=url)
-            raise AssertionError(f"Unexpected URL: {url}")
-
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            origin_repo = root / "origin-aports"
+            pkg_src = origin_repo / "main" / "demo"
+            pkg_src.mkdir(parents=True)
+            (pkg_src / "APKBUILD").write_bytes(apkbuild_payload)
+            (pkg_src / "fix.patch").write_bytes(patch_payload)
+            subprocess.run(["git", "init", "-q", str(origin_repo)], check=True)
+            subprocess.run(["git", "-C", str(origin_repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(origin_repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(origin_repo), "config", "uploadpack.allowFilter", "true"], check=True)
+            subprocess.run(["git", "-C", str(origin_repo), "config", "uploadpack.allowAnySHA1InWant", "true"], check=True)
+            subprocess.run(["git", "-C", str(origin_repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(origin_repo), "commit", "-q", "-m", "init"], check=True)
+            commit = subprocess.check_output(["git", "-C", str(origin_repo), "rev-parse", "HEAD"], text=True).strip()
+
+            def fake_run_git_fetch(repo_dir, remote, objects, extra_args=(), attempts=3, delay=2.0):
+                subprocess.run(
+                    ["git", "-C", str(repo_dir), "fetch", "--quiet", "--no-write-fetch-head", *extra_args, f"file://{origin_repo}", *objects],
+                    check=True,
+                )
+
+            def fake_open_url(url, *args, **kwargs):
+                if url.endswith("/demo-1.0.tar.xz"):
+                    return Response(dist_payload, url=url)
+                raise AssertionError(f"Unexpected URL: {url}")
+
             inv = root / "alpine-packages.tsv"
             inv.write_text(f"demo\t1.0-r0\tdemo\t{commit}\tGPL-2.0-only\n")
             out = root / "release"
-            with patch.object(alpine_sources, "open_url", side_effect=fake_open_url):
+            with patch.object(alpine_sources, "run_git_fetch", side_effect=fake_run_git_fetch), \
+                 patch.object(alpine_sources, "open_url", side_effect=fake_open_url):
                 manifest_path, archives = alpine_sources.build_bundle(inv, out, "v2.0.0", workers=1)
+
             self.assertEqual(len(archives), 1)
             manifest = json.loads(manifest_path.read_text())
             self.assertEqual(manifest["package_count"], 1)
