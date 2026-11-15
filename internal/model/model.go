@@ -36,15 +36,10 @@ type OneBotConfig struct {
 	SelfIDs []string `json:"self_ids"`
 }
 type SecurityConfig struct {
-	CapDisabled   bool   `json:"cap_disabled"`
-	CapURL        string `json:"cap_url"`
-	CapSiteKey    string `json:"cap_site_key"`
-	CapSecret     string `json:"cap_secret"`
-	CapLevel      int    `json:"cap_level"`
-	Failures      int    `json:"failures"`
-	WindowMinutes int    `json:"window_minutes"`
-	BanMinutes    int    `json:"ban_minutes"`
-	SessionHours  int    `json:"session_hours"`
+	Failures      int `json:"failures"`
+	WindowMinutes int `json:"window_minutes"`
+	BanMinutes    int `json:"ban_minutes"`
+	SessionHours  int `json:"session_hours"`
 }
 type ProxyConfig struct {
 	Mode string `json:"mode"`
@@ -61,6 +56,8 @@ type MediaConfig struct {
 	AutoDownload         bool   `json:"auto_download"`
 	ShowCover            bool   `json:"show_cover"`
 	ShowInfo             bool   `json:"show_info"`
+	CleanURL             bool   `json:"clean_url"`
+	MessageTemplate      string `json:"message_template"`
 	OversizeMode         string `json:"oversize_mode"`
 	Transport            string `json:"transport"`
 }
@@ -70,19 +67,25 @@ type CacheConfig struct {
 type PolicyConfig struct {
 	Enabled         bool    `json:"enabled"`
 	PrivateEnabled  bool    `json:"private_enabled"`
+	GroupReply      bool    `json:"group_reply"`
 	GroupWhitelist  []int64 `json:"group_whitelist"`
 	GroupBlacklist  []int64 `json:"group_blacklist"`
 	RejectText      string  `json:"reject_text"`
 	CooldownSeconds int     `json:"cooldown_seconds"`
 }
 type PlatformPolicy struct {
-	Enabled     bool   `json:"enabled"`
-	NSFWBlocked bool   `json:"nsfw_blocked"`
-	Overseas    bool   `json:"overseas"`
-	Cookie      string `json:"cookie"`
-	RejectText  string `json:"reject_text"`
-	Silent      bool   `json:"silent"`
+	Enabled         bool   `json:"enabled"`
+	NSFWBlocked     bool   `json:"nsfw_blocked"`
+	Overseas        bool   `json:"overseas"`
+	Cookie          string `json:"cookie"`
+	RejectText      string `json:"reject_text"`
+	Silent          bool   `json:"silent"`
+	TemplateMode    string `json:"template_mode"`
+	MessageTemplate string `json:"message_template"`
+	CoverMode       string `json:"cover_mode"`
 }
+
+const DefaultMessageTemplate = "{title}\n{author}\n{content}\n{url}"
 type Platform struct {
 	ID       string   `json:"id"`
 	Name     string   `json:"name"`
@@ -191,17 +194,62 @@ func NewID() string {
 func DefaultConfig() Config {
 	p := map[string]PlatformPolicy{}
 	for _, v := range Platforms {
-		p[v.ID] = PlatformPolicy{Enabled: true, Overseas: v.Overseas}
+		p[v.ID] = PlatformPolicy{Enabled: true, Overseas: v.Overseas, TemplateMode: "inherit", CoverMode: "inherit"}
 	}
 	return Config{
 		Server:   ServerConfig{Listen: "::", Port: 10492, TrustedProxies: []string{}, AdminNetworks: []string{}},
 		OneBot:   OneBotConfig{Token: NewID() + NewID(), SelfIDs: []string{}},
-		Security: SecurityConfig{CapURL: "http://127.0.0.1:3000", CapLevel: 4, Failures: 5, WindowMinutes: 15, BanMinutes: 60, SessionHours: 12},
+		Security: SecurityConfig{Failures: 5, WindowMinutes: 15, BanMinutes: 60, SessionHours: 12},
 		Proxy:    ProxyConfig{Mode: "direct"},
-		Media:    MediaConfig{MaxBytes: 80 * 1024 * 1024, MaxDurationSeconds: 1500, MaxImages: 30, Quality: 720, Concurrency: 2, TranscodeConcurrency: 1, MaxDiskBytes: 2 * 1024 * 1024 * 1024, AutoDownload: true, ShowCover: true, ShowInfo: true, OversizeMode: "link", Transport: "file"},
-		Cache:    CacheConfig{TTLHours: 24}, Policy: PolicyConfig{Enabled: true, PrivateEnabled: true, CooldownSeconds: 30, RejectText: "{platform} 暂不支持解析：{reason}", GroupWhitelist: []int64{}, GroupBlacklist: []int64{}}, Platforms: p,
+		Media:    MediaConfig{MaxBytes: 80 * 1024 * 1024, MaxDurationSeconds: 1500, MaxImages: 30, Quality: 720, Concurrency: 2, TranscodeConcurrency: 1, MaxDiskBytes: 2 * 1024 * 1024 * 1024, AutoDownload: true, ShowCover: true, ShowInfo: true, CleanURL: true, MessageTemplate: DefaultMessageTemplate, OversizeMode: "link", Transport: "file"},
+		Cache:    CacheConfig{TTLHours: 24},
+		Policy:   PolicyConfig{Enabled: true, PrivateEnabled: true, GroupReply: true, CooldownSeconds: 30, RejectText: "{platform} 暂不支持解析：{reason}", GroupWhitelist: []int64{}, GroupBlacklist: []int64{}},
+		Platforms: p,
 	}
 }
+
+// NormalizeConfig fills backward-compatible defaults on upgraded or imported configurations.
+func NormalizeConfig(c *Config) {
+	if c == nil {
+		return
+	}
+	if c.Server.TrustedProxies == nil {
+		c.Server.TrustedProxies = []string{}
+	}
+	if c.Server.AdminNetworks == nil {
+		c.Server.AdminNetworks = []string{}
+	}
+	if c.OneBot.SelfIDs == nil {
+		c.OneBot.SelfIDs = []string{}
+	}
+	if c.Policy.GroupWhitelist == nil {
+		c.Policy.GroupWhitelist = []int64{}
+	}
+	if c.Policy.GroupBlacklist == nil {
+		c.Policy.GroupBlacklist = []int64{}
+	}
+	if strings.TrimSpace(c.Media.MessageTemplate) == "" {
+		c.Media.MessageTemplate = DefaultMessageTemplate
+	}
+	if c.Platforms == nil {
+		c.Platforms = map[string]PlatformPolicy{}
+	}
+	for _, def := range Platforms {
+		pol, ok := c.Platforms[def.ID]
+		if !ok {
+			pol = PlatformPolicy{Enabled: true, Overseas: def.Overseas, TemplateMode: "inherit", CoverMode: "inherit"}
+		} else {
+			if pol.TemplateMode == "" {
+				pol.TemplateMode = "inherit"
+			}
+			if pol.CoverMode == "" {
+				pol.CoverMode = "inherit"
+			}
+		}
+		c.Platforms[def.ID] = pol
+	}
+}
+
 func (c Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("端口必须为1–65535")
@@ -218,11 +266,11 @@ func (c Config) Validate() error {
 	if c.Security.Failures < 1 || c.Security.Failures > 100 || c.Security.WindowMinutes < 1 || c.Security.WindowMinutes > 1440 || c.Security.BanMinutes < 1 || c.Security.BanMinutes > 43200 || c.Security.SessionHours < 1 || c.Security.SessionHours > 168 {
 		return fmt.Errorf("登录安全参数超出范围")
 	}
-	if c.Security.CapLevel < 1 || c.Security.CapLevel > 10 {
-		return fmt.Errorf("Cap等级必须为1–10")
-	}
 	if c.Media.MaxBytes < 1024 || c.Media.MaxBytes > 4*1024*1024*1024 || c.Media.MaxDiskBytes < c.Media.MaxBytes || c.Media.MaxImages < 1 || c.Media.MaxImages > 200 || c.Media.MaxDurationSeconds < 1 || c.Media.MaxDurationSeconds > 86400 || c.Media.Concurrency < 1 || c.Media.Concurrency > 16 || c.Media.TranscodeConcurrency < 1 || c.Media.TranscodeConcurrency > 4 {
 		return fmt.Errorf("媒体资源限制无效")
+	}
+	if len(c.Media.MessageTemplate) > 4096 {
+		return fmt.Errorf("全局消息模板不能超过4096字符")
 	}
 	if c.Media.OversizeMode != "link" && c.Media.OversizeMode != "file" {
 		return fmt.Errorf("超限处理仅支持link/file")
@@ -248,9 +296,21 @@ func (c Config) Validate() error {
 	if c.Proxy.Mode != "direct" && c.Proxy.URL == "" {
 		return fmt.Errorf("启用代理前必须配置代理地址")
 	}
-	for id := range c.Platforms {
+	for id, pol := range c.Platforms {
 		if _, ok := PlatformByID(id); !ok {
 			return fmt.Errorf("未知平台：%s", id)
+		}
+		if pol.TemplateMode != "" && pol.TemplateMode != "inherit" && pol.TemplateMode != "custom" && pol.TemplateMode != "none" {
+			return fmt.Errorf("平台 %s 模板模式无效", id)
+		}
+		if len(pol.MessageTemplate) > 4096 {
+			return fmt.Errorf("平台 %s 消息模板不能超过4096字符", id)
+		}
+		if pol.TemplateMode == "custom" && strings.TrimSpace(pol.MessageTemplate) == "" {
+			return fmt.Errorf("平台 %s 启用自定义模板时模板内容不能为空", id)
+		}
+		if pol.CoverMode != "" && pol.CoverMode != "inherit" && pol.CoverMode != "on" && pol.CoverMode != "off" {
+			return fmt.Errorf("平台 %s 封面模式无效", id)
 		}
 	}
 	for _, p := range Platforms {
@@ -336,14 +396,14 @@ type Segment struct {
 	Data map[string]any `json:"data"`
 }
 type Target struct {
-	BotID   string `json:"bot_id"`
-	GroupID int64  `json:"group_id"`
-	UserID  int64  `json:"user_id"`
+	BotID     string `json:"bot_id"`
+	GroupID   int64  `json:"group_id"`
+	UserID    int64  `json:"user_id"`
+	MessageID string `json:"message_id,omitempty"`
 }
 type Event struct {
 	Target
-	MessageID string    `json:"message_id"`
-	Segments  []Segment `json:"segments"`
+	Segments []Segment `json:"segments"`
 }
 type BotStatus struct {
 	SelfID      string    `json:"self_id"`

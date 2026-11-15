@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
 
 	"multiparse/internal/model"
+	"multiparse/internal/policy"
 	"multiparse/internal/store"
 )
 
@@ -19,9 +19,6 @@ const secretSentinel = "********"
 
 func redacted(c model.Config) model.Config {
 	c.OneBot.Token = secretSentinel
-	if c.Security.CapSecret != "" {
-		c.Security.CapSecret = secretSentinel
-	}
 	if u, e := url.Parse(c.Proxy.URL); e == nil && u.User != nil {
 		c.Proxy.URL = secretSentinel
 	}
@@ -33,12 +30,11 @@ func redacted(c model.Config) model.Config {
 	}
 	return c
 }
+
 func restoreSecrets(c *model.Config, old model.Config) {
+	model.NormalizeConfig(c)
 	if c.OneBot.Token == secretSentinel {
 		c.OneBot.Token = old.OneBot.Token
-	}
-	if c.Security.CapSecret == secretSentinel {
-		c.Security.CapSecret = old.Security.CapSecret
 	}
 	if c.Proxy.URL == secretSentinel {
 		c.Proxy.URL = old.Proxy.URL
@@ -50,6 +46,7 @@ func restoreSecrets(c *model.Config, old model.Config) {
 		}
 	}
 }
+
 func sensitive(old, c model.Config) bool {
 	if !reflect.DeepEqual(old.Server, c.Server) || old.Security != c.Security || !reflect.DeepEqual(old.OneBot, c.OneBot) || old.Proxy != c.Proxy {
 		return true
@@ -61,7 +58,23 @@ func sensitive(old, c model.Config) bool {
 	}
 	return false
 }
-func (s *Server) applyConfig(r *http.Request, c model.Config) error {
+
+func sanitizePreviewResult(r model.ParseResult) model.ParseResult {
+	r.Headers = nil
+	r.Extraction = nil
+	if len(r.Media) > 0 {
+		mediaCopy := make([]model.Media, len(r.Media))
+		copy(mediaCopy, r.Media)
+		for i := range mediaCopy {
+			mediaCopy[i].Headers = nil
+		}
+		r.Media = mediaCopy
+	}
+	return r
+}
+
+func (s *Server) applyConfig(_ *http.Request, c model.Config) error {
+	model.NormalizeConfig(&c)
 	old := s.st.Config()
 	if err := store.ValidateConfig(c); err != nil {
 		return err
@@ -80,63 +93,19 @@ func (s *Server) applyConfig(r *http.Request, c model.Config) error {
 			discard()
 		}
 	}()
-	enablingCap := old.Security.CapDisabled && !c.Security.CapDisabled
-	capChange := !c.Security.CapDisabled && (enablingCap || old.Security.CapLevel != c.Security.CapLevel || old.Security.CapSiteKey != c.Security.CapSiteKey || old.Security.CapSecret != c.Security.CapSecret || old.Security.CapURL != c.Security.CapURL)
-	s.cap.mu.RLock()
-	auth, wasReady := s.cap.auth, s.cap.ready
-	s.cap.mu.RUnlock()
-	oldAuth := auth
-	rollbackCap := func(cause error) error {
-		if capChange && !old.Security.CapDisabled {
-			if err := s.restoreCap(old, oldAuth, wasReady); err != nil {
-				return fmt.Errorf("%w；Cap恢复验证失败，登录保持关闭：%v", cause, err)
-			}
-		} else if enablingCap {
-			s.markCapReady(old, oldAuth, false)
-		}
-		return cause
-	}
-	if enablingCap {
-		key, err := os.ReadFile(s.hooks.CapAdminKeyFile)
-		if err != nil {
-			return errors.New("无法读取本机CAP_ADMIN_KEY_FILE，Cap保持关闭")
-		}
-		c, auth, err = s.capCredentials(r.Context(), c, strings.TrimSpace(string(key)))
-		if err != nil {
-			return err
-		}
-	}
-	if capChange {
-		if auth == "" {
-			return errors.New("Cap管理会话不可用，请使用本机CAP_ADMIN_KEY_FILE重新启动初始化")
-		}
-		s.cap.mu.Lock()
-		s.cap.ready = false
-		s.cap.mu.Unlock()
-		if err := s.configureCap(r.Context(), c, auth); err != nil {
-			return rollbackCap(err)
-		}
-		if enablingCap && !s.capHealthy(r.Context(), c) {
-			return rollbackCap(errors.New("Cap服务健康检查失败，Cap保持关闭"))
-		}
-	}
 	if err := s.st.SaveConfig(c); err != nil {
-		return rollbackCap(err)
+		return err
 	}
 	if apply != nil {
 		apply()
 	}
 	committed = true
-	if c.Security.CapDisabled {
-		s.markCapReady(c, auth, false)
-	} else if capChange {
-		s.markCapReady(c, auth, true)
-	}
 	if s.hooks.ConfigChanged != nil {
 		s.hooks.ConfigChanged(old, c)
 	}
 	return nil
 }
+
 func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, token string) {
 	method := r.Method
 	path := r.URL.Path
@@ -258,11 +227,27 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 		for _, e := range entries {
 			var size int64
 			for _, f := range e.Files {
-				size += f.Size
+				size += f.Size + f.VideoSize
 			}
-			out = append(out, map[string]any{"key": e.Key, "platform": e.Platform, "url": e.URL, "title": e.Result.Title, "type": e.Result.Type, "size": size, "bytes": size, "file_count": len(e.Files), "created_at": e.CreatedAt, "expires_at": e.ExpiresAt})
+			out = append(out, map[string]any{"key": e.Key, "platform": e.Platform, "url": e.URL, "title": e.Result.Title, "author": e.Result.Author, "type": e.Result.Type, "size": size, "bytes": size, "file_count": len(e.Files), "created_at": e.CreatedAt, "expires_at": e.ExpiresAt})
 		}
 		reply(w, 200, out)
+		return
+	case path == "/api/cache" && method == "DELETE":
+		key := strings.TrimSpace(r.URL.Query().Get("key"))
+		if key == "" {
+			failure(w, 400, "必须提供缓存键")
+			return
+		}
+		if s.hooks.DeleteCache == nil {
+			failure(w, 503, "缓存服务不可用")
+			return
+		}
+		if err := s.hooks.DeleteCache(key); err != nil {
+			failure(w, 400, err.Error())
+			return
+		}
+		reply(w, 200, map[string]bool{"ok": true})
 		return
 	case path == "/api/cache/clear" && method == "POST":
 		var b struct {
@@ -347,6 +332,48 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 			return
 		}
 		reply(w, 202, map[string]string{"id": id})
+		return
+	case path == "/api/parse/preview" && method == "POST":
+		var b struct {
+			URL      string `json:"url"`
+			Template string `json:"template"`
+		}
+		if err := decode(w, r, &b); err != nil {
+			failure(w, 400, err.Error())
+			return
+		}
+		if len(b.URL) > 8192 || strings.TrimSpace(b.URL) == "" {
+			failure(w, 400, "请输入有效链接")
+			return
+		}
+		if len(b.Template) > 4096 {
+			failure(w, 400, "预览模板过长")
+			return
+		}
+		if s.hooks.Preview == nil {
+			failure(w, 503, "预览服务不可用")
+			return
+		}
+		res, err := s.hooks.Preview(r.Context(), b.URL)
+		if err != nil {
+			failure(w, 400, err.Error())
+			return
+		}
+		cfg := s.st.Config()
+		effectiveTemplate := policy.ResolveMessageTemplate(cfg, res.Platform)
+		rendered := policy.FormatMessage(cfg, *res, nil)
+		if strings.TrimSpace(b.Template) != "" {
+			effectiveTemplate = b.Template
+			rendered = policy.FormatWithTemplate(cfg, b.Template, *res, nil)
+		}
+		reply(w, 200, map[string]any{
+			"result":             sanitizePreviewResult(*res),
+			"rendered":           rendered,
+			"clean_url":          policy.CleanTrackingURL(res.SourceURL),
+			"effective_template": effectiveTemplate,
+			"show_cover":         policy.EffectiveShowCover(cfg, res.Platform),
+			"media_count":        len(res.Media),
+		})
 		return
 	case path == "/api/platforms" && method == "GET":
 		reply(w, 200, model.Platforms)

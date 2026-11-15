@@ -456,3 +456,56 @@ func TestDeliverPreservesAudioFileAndOversizeUploads(t *testing.T) {
 		})
 	}
 }
+
+func TestDeliverGroupReplyAndPlatformTemplateOverride(t *testing.T) {
+	x := newDeliveryHarness(t, "file")
+	x.target.MessageID = "987654"
+	cfg := x.s.st.Config()
+	pol := cfg.Platforms["bilibili"]
+	pol.TemplateMode = "custom"
+	pol.MessageTemplate = "{title}"
+	pol.CoverMode = "off"
+	cfg.Platforms["bilibili"] = pol
+	if err := x.s.st.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	entry := x.entry(t, model.Artifact{Kind: "video", Path: "video.mp4", ThumbPath: "cover.jpg", Size: 10})
+	result, _ := x.start(t, &entry)
+	first := x.next(t)
+	deliveryTypes(t, first, "reply,text")
+	if first.Params.Message[0].Data["id"] != "987654" {
+		t.Fatalf("reply id = %v, want 987654", first.Params.Message[0].Data["id"])
+	}
+	if first.Params.Message[1].Data["text"] != "【title】" {
+		t.Fatalf("custom template text = %v, want 【title】", first.Params.Message[1].Data["text"])
+	}
+	x.ack(t, first, 0)
+	second := x.next(t)
+	deliveryTypes(t, second, "video")
+	x.ack(t, second, 0)
+	if err := deliveryResult(t, result); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteCacheEntryAndPreview(t *testing.T) {
+	s := cacheService(t)
+	key := strings.Repeat("a", 64)
+	entry := seedCache(t, s, key, time.Now())
+	if err := s.DeleteCacheEntry(key); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.st.GetCache(key); err != nil || got != nil {
+		t.Fatalf("cache entry persisted after delete: %+v %v", got, err)
+	}
+	if _, err := os.Stat(entry.Files[0].Path); !os.IsNotExist(err) {
+		t.Fatalf("cache file persisted after delete: %v", err)
+	}
+	s.resolve = func(ctx context.Context, cfg model.Config, raw string) (*model.ParseResult, error) {
+		return &model.ParseResult{Platform: "bilibili", Title: "预览标题", Author: "UP", SourceURL: raw, Type: "video"}, nil
+	}
+	res, err := s.Preview(context.Background(), "BV1GJ411x7h7")
+	if err != nil || res.Title != "预览标题" {
+		t.Fatalf("Preview failed: %+v %v", res, err)
+	}
+}

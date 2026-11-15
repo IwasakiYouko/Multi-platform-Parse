@@ -44,7 +44,7 @@ jobs:
         run: |
           go mod download all
           go run ./scripts/licenses -out "$RUNNER_TEMP/dependency-licenses"
-      - name: Test Debian source distribution tooling
+      - name: Test runtime installer scripts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Race tests
         run: go test -race -count=1 ./...
@@ -55,9 +55,8 @@ jobs:
       - name: Validate deployment and source build override
         run: |
           docker compose -f compose.yaml config --quiet
-          docker compose -f compose.no-cap.yaml config --quiet
           docker compose -f compose.yaml -f compose.build.yaml config --quiet
-      - name: Check packaged extractor on Debian as non-root
+      - name: Check packaged extractor on Alpine as non-root
         run: |
           docker build --platform linux/amd64 --target app --tag multiparse-runtime-check .
           docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
@@ -66,7 +65,7 @@ jobs:
             --entrypoint /opt/yt-dlp/bin/python multiparse-runtime-check -I /runtime-smoke.py
 
   images:
-    name: Build and publish linux/amd64 images
+    name: Build and publish linux/amd64 image
     needs: checks
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
@@ -92,17 +91,14 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-      - name: Build both targets before publishing
+      - name: Build Alpine application image
         run: |
           set -euo pipefail
-          for target in app cap; do
-            image=ghcr.io/iwasakiyouko/multi-platform-parse
-            if [[ "$target" == cap ]]; then image="${image}-cap"; fi
-            tags=()
-            while IFS= read -r tag; do tags+=(--tag "$image:$tag"); done < "$RUNNER_TEMP/image-tags"
-            docker build --platform linux/amd64 --target "$target" --build-arg "VCS_REF=$GITHUB_SHA" "${tags[@]}" .
-          done
-      - name: Bundle exact Debian corresponding sources
+          image=ghcr.io/iwasakiyouko/multi-platform-parse
+          tags=()
+          while IFS= read -r tag; do tags+=(--tag "$image:$tag"); done < "$RUNNER_TEMP/image-tags"
+          docker build --platform linux/amd64 --target app --build-arg "VCS_REF=$GITHUB_SHA" "${tags[@]}" .
+      - name: Export Alpine package inventory
         if: github.ref_type == 'tag'
         env:
           VERSION: ${{ steps.tags.outputs.version }}
@@ -111,16 +107,14 @@ jobs:
           mkdir -p release
           container=$(docker create "ghcr.io/iwasakiyouko/multi-platform-parse:$VERSION")
           trap 'docker rm -f "$container" > /dev/null' EXIT
-          docker cp "$container:/usr/local/share/doc/multiparse/debian-packages.tsv" release/debian-packages.tsv
+          docker cp "$container:/usr/local/share/doc/multiparse/alpine-packages.txt" release/alpine-packages.txt
           docker rm "$container"
           trap - EXIT
-          python3 scripts/debian_sources.py --inventory release/debian-packages.tsv --output release --release "v$VERSION"
-      - name: Push both images
+      - name: Push application image
         run: |
           set -euo pipefail
-          for image in ghcr.io/iwasakiyouko/multi-platform-parse ghcr.io/iwasakiyouko/multi-platform-parse-cap; do
-            while IFS= read -r tag; do docker push "$image:$tag"; done < "$RUNNER_TEMP/image-tags"
-          done
+          image=ghcr.io/iwasakiyouko/multi-platform-parse
+          while IFS= read -r tag; do docker push "$image:$tag"; done < "$RUNNER_TEMP/image-tags"
       - name: Prepare Docker-loadable public release assets
         if: github.ref_type == 'tag'
         env:
@@ -129,22 +123,20 @@ jobs:
           set -euo pipefail
           mkdir -p release
           archive="multi-platform-parse-v${VERSION}-linux-amd64.tar.gz"
-          docker save "ghcr.io/iwasakiyouko/multi-platform-parse:$VERSION" "ghcr.io/iwasakiyouko/multi-platform-parse-cap:$VERSION" | gzip -1 > "release/$archive"
-          cp compose.yaml compose.no-cap.yaml .env.example release/
+          docker save "ghcr.io/iwasakiyouko/multi-platform-parse:$VERSION" | gzip -1 > "release/$archive"
+          cp compose.yaml .env.example release/
           # Match the downloaded Compose defaults to this release, without a YAML dependency.
           VERSION="$VERSION" python3 - <<'PY'
           import os
           import re
           from pathlib import Path
           version = os.environ['VERSION']
-          for name in ('compose.yaml', 'compose.no-cap.yaml'):
-              path = Path('release') / name
-              path.write_text(re.sub(r'\$\{IMAGE_TAG:-[^}]+\}', '${IMAGE_TAG:-' + version + '}', path.read_text()))
+          path = Path('release/compose.yaml')
+          path.write_text(re.sub(r'\$\{IMAGE_TAG:-[^}]+\}', '${IMAGE_TAG:-' + version + '}', path.read_text()))
           path = Path('release/.env.example')
           path.write_text(re.sub(r'^IMAGE_TAG=.*$', 'IMAGE_TAG=' + version, path.read_text(), flags=re.MULTILINE))
           PY
-          (cd release && sha256sum "$archive" compose.yaml compose.no-cap.yaml .env.example > SHA256SUMS)
-          (cd release && sha256sum debian-packages.tsv debian-source-manifest.json multi-platform-parse-v*-debian-sources.tar.gz.part* > DEBIAN-SOURCES-SHA256SUMS)
+          (cd release && sha256sum "$archive" compose.yaml .env.example alpine-packages.txt > SHA256SUMS)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: github.ref_type == 'tag'
         with:
@@ -179,19 +171,17 @@ jobs:
         run: |
           set -euo pipefail
           mv release/.env.example release/default.env.example
-          printf 'Load images with: `docker load -i multi-platform-parse-%s-linux-amd64.tar.gz`.\n\n' "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes"
+          printf 'Load image with: `docker load -i multi-platform-parse-%s-linux-amd64.tar.gz`.\n\n' "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes"
           cat >> "$RUNNER_TEMP/release-notes" <<'NOTES'
-          Linux amd64 images for the Go application and its official Cap-based launcher. YouTube, Facebook, and Snapchat use the bundled, pinned yt-dlp/EJS/Deno runtime; other platforms use Go adapters.
+          Single-container Linux amd64 Alpine image (`alpine:3.24`) for Multi-platform-Parse. YouTube, Facebook, and Snapchat use the bundled, pinned yt-dlp/EJS/Deno runtime; all other platforms use native Go adapters.
 
-          Platform migration follows ParseHub 2.3.15 (including Douyin mobile fallback) and preserves the native Bilibili parser (with WBI signature fallback). Use your own platform credentials where login is required; embedded shared upstream cookies are not distributed. See CHANGELOG.md for version-specific changes.
+          Highlights in v2.0.0:
+          - Per-platform message block template engine (`{title}`, `{author}`, `{content}`, `{url}`, `{clean_url}`, `{platform}`, `{type}`, `{media_stats}`, plus `{raw_*}` variables), smart empty-line collapsing, Title==Content deduplication, URL tracking cleanup, and optional group quote-reply.
+          - Redesigned responsive Admin Control Panel with light/dark theme, 6-module navigation, slide-over platform configuration drawer, live message preview sandbox, single-entry cache deletion, config export/import, and frictionless 1-click non-sensitive saves.
+          - Removed Cap CAPTCHA / Valkey sidecar containers; authentication uses Argon2id password protection, forced initial password change, HttpOnly sessions, CSRF/same-origin validation, and persistent IP brute-force bans.
+          - Migrated container base from Debian to Alpine (`alpine:3.24`) for a compact single-container deployment.
 
-          GHCR packages can initially be private. Public installation does not require GHCR access for these two images: download the gzip archive, SHA256SUMS, compose.yaml, compose.no-cap.yaml, and default.env.example from this Release. Save default.env.example locally as .env.example before verifying with `sha256sum -c SHA256SUMS`, then load the archive with the command above. Both versioned image tags match the supplied Compose defaults.
-
-          Copy `.env.example` to `.env`, create the `certs` directory, and run `docker compose up -d --no-build`. The pinned third-party Valkey image still requires a registry pull. Host networking requires a Linux deployment. See the repository README for configuration and first-run credentials. No arm64 Cap image is provided.
-
-          Password-only deployment: use `docker compose -f compose.no-cap.yaml up -d --wait` instead of the default file. It runs only the Go app, explicitly disables Cap on first initialization, and keeps password, session, and ban protection. Existing deployments must disable Cap in the authenticated security panel before removing Cap/Valkey; environment variables do not override saved policy. Do not merge the two deployment files. CAPTCHA remains enabled by default.
-
-          Debian corresponding sources: download every same-release `*-debian-sources.tar.gz.part*` asset, `debian-source-manifest.json`, `debian-packages.tsv`, and `DEBIAN-SOURCES-SHA256SUMS`. Run `sha256sum -c DEBIAN-SOURCES-SHA256SUMS`, then concatenate the ordered parts into `tar -xz` to extract. The inventory records exact source package versions for every installed Debian package; the manifest records immutable snapshot URLs and verified hashes. These materials document redistribution inputs, not a legal guarantee for every component in the images.
+          Offline / archive installation: download the `.tar.gz` image archive, `SHA256SUMS`, `compose.yaml`, `alpine-packages.txt`, and `default.env.example` from this Release. Rename `default.env.example` to `.env.example`, verify with `sha256sum -c SHA256SUMS`, load the archive with the command above, copy `.env.example` to `.env`, create `certs/`, and run `docker compose up -d --no-build`. See `README.md` and `CHANGELOG.md` for full details and upgrade instructions from v1.x.
           NOTES
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release/* --clobber

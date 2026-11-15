@@ -335,11 +335,6 @@ func (s *Store) ListBans() ([]Ban, error) {
 	}
 	return out, rows.Err()
 }
-func (s *Store) ConsumeCapToken(token string) error {
-	_, err := s.db.Exec("INSERT INTO cap_replays(hash,expires_at) VALUES(?,?)", digest(token), time.Now().Add(3*time.Hour).Unix())
-	return err
-}
-
 // AllowRequest uses persistent bounded fixed windows; storage errors reject requests.
 func (s *Store) AllowRequest(bucket string, max int, window time.Duration) (bool, error) {
 	bucket = digest(bucket)

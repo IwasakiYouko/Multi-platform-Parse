@@ -36,7 +36,12 @@ deno = os.environ.get("YTDLP_JS_RUNTIME", "/usr/local/bin/deno")
 environment = dict(os.environ, DENO_NO_UPDATE_CHECK="1", DENO_NO_PROMPT="1")
 version = subprocess.run([deno, "--version"], env=environment, check=True,
                          capture_output=True, text=True, timeout=15).stdout
-if version.splitlines()[0] != "deno 2.9.8 (stable, release, x86_64-unknown-linux-gnu)":
+first_line = version.splitlines()[0] if version else ""
+valid_deno = (
+    first_line == "deno 2.9.8 (stable, release, x86_64-unknown-linux-gnu)"
+    or (first_line.startswith("deno 2.") and "alpine-linux-musl)" in first_line)
+)
+if not valid_deno:
     raise RuntimeError(f"unexpected Deno version: {version!r}")
 script = solver.lib() + "\nconst {meriyah, astring} = lib;\n" + solver.core() + """
 if (typeof jsc !== 'function') throw new Error('EJS solver unavailable');
@@ -51,7 +56,9 @@ console.log(JSON.stringify({type: ast.type, code: astring.generate(ast)}));
 """
 result = subprocess.run([
     deno, "run", "--no-config", "--no-remote", "--no-npm", "--no-prompt",
-    "--deny-net", "--deny-import", "-",
+    "--deny-net", "--deny-import", "--deny-read", "--deny-write",
+    "--deny-env", "--deny-run", "--deny-ffi", "--cached-only",
+    "--v8-flags=--max-old-space-size=256", "-",
 ], env=environment, input=script, check=True, capture_output=True, text=True, timeout=30)
 if json.loads(result.stdout) != {"type": "Program", "code": "const answer = 6 * 7;\n"}:
     raise RuntimeError("bundled EJS parser/generator failed")

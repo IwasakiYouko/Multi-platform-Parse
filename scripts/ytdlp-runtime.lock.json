@@ -24,7 +24,8 @@
       "url": "https://files.pythonhosted.org/packages/89/5a/7071a621eb2d052d64efd5da2ef55ecdac7c3b0c6e4f9d519e9c66d987ef/brotli-1.2.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
       "sha256": "40d918bce2b427a0c4ba189df7a006ac0c7277c180aee4617d99e9ccaaf59e6a",
       "size": 1426014,
-      "python": "3.11"
+      "python": "3.11",
+      "libc": "glibc"
     },
     {
       "name": "brotli",
@@ -33,7 +34,8 @@
       "url": "https://files.pythonhosted.org/packages/03/a7/03aa61fbc3c5cbf99b44d158665f9b0dd3d8059be16c460208d9e385c837/brotli-1.2.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
       "sha256": "072e7624b1fc4d601036ab3f4f27942ef772887e876beff0301d261210bca97f",
       "size": 1419762,
-      "python": "3.12"
+      "python": "3.12",
+      "libc": "glibc"
     },
     {
       "name": "brotli",
@@ -42,7 +44,8 @@
       "url": "https://files.pythonhosted.org/packages/5f/16/a1b22cbea436642e071adcaf8d4b350a2ad02f5e0ad0da879a1be16188a0/brotli-1.2.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
       "sha256": "67a91c5187e1eec76a61625c77a6c8c785650f5b576ca732bd33ef58b0dff49c",
       "size": 1419737,
-      "python": "3.13"
+      "python": "3.13",
+      "libc": "glibc"
     },
     {
       "name": "brotli",
@@ -51,7 +54,48 @@
       "url": "https://files.pythonhosted.org/packages/f3/2f/0976d5b097ff8a22163b10617f76b2557f15f0f39d6a0fe1f02b1a53e92b/brotli-1.2.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
       "sha256": "cf9cba6f5b78a2071ec6fb1e7bd39acf35071d90a81231d67e92d637776a6a63",
       "size": 1419861,
-      "python": "3.14"
+      "python": "3.14",
+      "libc": "glibc"
+    },
+    {
+      "name": "brotli",
+      "version": "1.2.0",
+      "filename": "brotli-1.2.0-cp311-cp311-musllinux_1_2_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/0d/1a/23fcfee1c324fd48a63d7ebf4bac3a4115bdb1b00e600f80f727d850b1ae/brotli-1.2.0-cp311-cp311-musllinux_1_2_x86_64.whl",
+      "sha256": "844a8ceb8483fefafc412f85c14f2aae2fb69567bf2a0de53cdb88b73e7c43ae",
+      "size": 1493505,
+      "python": "3.11",
+      "libc": "musl"
+    },
+    {
+      "name": "brotli",
+      "version": "1.2.0",
+      "filename": "brotli-1.2.0-cp312-cp312-musllinux_1_2_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/d5/3b/39e13ce78a8e9a621c5df3aeb5fd181fcc8caba8c48a194cd629771f6828/brotli-1.2.0-cp312-cp312-musllinux_1_2_x86_64.whl",
+      "sha256": "af43b8711a8264bb4e7d6d9a6d004c3a2019c04c01127a868709ec29962b6036",
+      "size": 1487913,
+      "python": "3.12",
+      "libc": "musl"
+    },
+    {
+      "name": "brotli",
+      "version": "1.2.0",
+      "filename": "brotli-1.2.0-cp313-cp313-musllinux_1_2_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/9e/4a/9526d14fa6b87bc827ba1755a8440e214ff90de03095cacd78a64abe2b7d/brotli-1.2.0-cp313-cp313-musllinux_1_2_x86_64.whl",
+      "sha256": "54a50a9dad16b32136b2241ddea9e4df159b41247b2ce6aac0b3276a66a8f1e5",
+      "size": 1487945,
+      "python": "3.13",
+      "libc": "musl"
+    },
+    {
+      "name": "brotli",
+      "version": "1.2.0",
+      "filename": "brotli-1.2.0-cp314-cp314-musllinux_1_2_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/b3/73/3183c9e41ca755713bdf2cc1d0810df742c09484e2e1ddd693bee53877c1/brotli-1.2.0-cp314-cp314-musllinux_1_2_x86_64.whl",
+      "sha256": "d2d085ded05278d1c7f65560aae97b3160aeb2ea2c0b3e26204856beccb60888",
+      "size": 1488164,
+      "python": "3.14",
+      "libc": "musl"
     },
     {
       "name": "certifi",
@@ -75,7 +119,17 @@
       "filename": "pycryptodomex-3.24.0-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
       "url": "https://files.pythonhosted.org/packages/c8/9f/376b705a536c65fe41806babe5cdcfb076273a0d72dfbbb92073d3d9b10c/pycryptodomex-3.24.0-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
       "sha256": "556e063b52f338bd924fe5c40692cc1f50cb0453bd1d6580b7ffff2eade1a894",
-      "size": 2279395
+      "size": 2279395,
+      "libc": "glibc"
+    },
+    {
+      "name": "pycryptodomex",
+      "version": "3.24.0",
+      "filename": "pycryptodomex-3.24.0-cp37-abi3-musllinux_1_2_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/39/51/c5b9d8fc84d5cf67091a007b476e24f634252fb314472e27a58f3bd97458/pycryptodomex-3.24.0-cp37-abi3-musllinux_1_2_x86_64.whl",
+      "sha256": "5fa46af1281be707e0ec5878aea0f77d58d8d4b465f63f7385a71ae0080bfff9",
+      "size": 2276914,
+      "libc": "musl"
     },
     {
       "name": "requests",

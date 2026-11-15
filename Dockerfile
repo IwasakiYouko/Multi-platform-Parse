@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS build
+FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download all
@@ -10,46 +10,31 @@ RUN --mount=type=cache,target=/root/.cache/go-build go run ./scripts/licenses -o
 RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/multiparse ./cmd/multiparse
 
 # Only build tooling has pip; the isolated runtime contains locked yt-dlp default dependencies.
-FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS ytdlp-runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv python3-pip \
- && rm -rf /var/lib/apt/lists/*
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS ytdlp-runtime
+RUN apk add --no-cache ca-certificates python3 py3-pip
 COPY scripts/install_ytdlp_runtime.py scripts/ytdlp-runtime.lock.json /runtime/
-COPY scripts/runtime-licenses/ /runtime/runtime-licenses/
-RUN /usr/bin/python3 /runtime/install_ytdlp_runtime.py
+RUN /usr/bin/python3 /runtime/install_ytdlp_runtime.py --skip-deno
 
-FROM tiago2/cap:3.1.17@sha256:b47424a1b4ab3e6e7205ba1ed35fa25c8817c78bf0a82a0c7dac5d3393167a03 AS cap
-USER root
-ARG VCS_REF=unknown
-LABEL org.opencontainers.image.source="https://github.com/IwasakiYouko/Multi-platform-Parse" \
-      org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.title="Multi-platform-Parse Cap launcher" \
-      org.opencontainers.image.base.name="docker.io/tiago2/cap:3.1.17"
-RUN ["bun", "-e", "const fs = require('node:fs'); fs.mkdirSync('/secrets', {recursive:true, mode:0o700}); fs.chownSync('/secrets',1000,1000)"]
-USER bun
-COPY --from=build /out/multiparse /usr/local/bin/multiparse
-COPY THIRD_PARTY_NOTICES.md internal/web/assets/NOTICE internal/web/assets/*.LICENSE /usr/local/share/doc/multiparse/
-COPY --from=build /out/licenses/ /usr/local/share/doc/multiparse/
-ENTRYPOINT ["/usr/local/bin/multiparse", "cap-run"]
-
-FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS app
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS app
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/IwasakiYouko/Multi-platform-Parse" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.title="Multi-platform-Parse"
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg tzdata python3 libstdc++6 \
- && rm -rf /var/lib/apt/lists/* \
- && mkdir -p /data /media /secrets /certs /usr/local/share/doc/multiparse \
- && chown 1000:1000 /data /media /secrets /certs \
- && dpkg-query -W -f='${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\n' > /usr/local/share/doc/multiparse/debian-packages.tsv
+RUN apk add --no-cache ca-certificates ffmpeg tzdata python3 deno \
+ && (getent group 1000 >/dev/null || addgroup -g 1000 -S multiparse) \
+ && (getent passwd 1000 >/dev/null || adduser -u 1000 -S -D -h /tmp -G "$(getent group 1000 | cut -d: -f1)" multiparse) \
+ && mkdir -p /usr/local/bin /data /media /certs /usr/local/share/doc/multiparse \
+ && ln -sf /usr/bin/deno /usr/local/bin/deno \
+ && chown 1000:1000 /data /media /certs \
+ && apk info -v | sort > /usr/local/share/doc/multiparse/alpine-packages.txt
 COPY --from=build /out/multiparse /usr/local/bin/multiparse
-COPY THIRD_PARTY_NOTICES.md internal/web/assets/NOTICE internal/web/assets/*.LICENSE /usr/local/share/doc/multiparse/
+COPY THIRD_PARTY_NOTICES.md /usr/local/share/doc/multiparse/
 COPY --from=build /out/licenses/ /usr/local/share/doc/multiparse/
 COPY --from=ytdlp-runtime /opt/yt-dlp/ /opt/yt-dlp/
-COPY --from=ytdlp-runtime /usr/local/bin/deno /usr/local/bin/deno
 COPY --from=ytdlp-runtime /usr/local/share/doc/multiparse/ytdlp-runtime/ /usr/local/share/doc/multiparse/ytdlp-runtime/
 USER 1000:1000
-ENV DATA_DIR=/data CACHE_DIR=/media CAP_ADMIN_KEY_FILE=/secrets/cap-admin.key \
-    YTDLP_PYTHON=/opt/yt-dlp/bin/python YTDLP_JS_RUNTIME=/usr/local/bin/deno \
+ENV DATA_DIR=/data CACHE_DIR=/media \
+    YTDLP_PYTHON=/opt/yt-dlp/bin/python YTDLP_JS_RUNTIME=/usr/bin/deno \
     DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1
 WORKDIR /data
 EXPOSE 10492

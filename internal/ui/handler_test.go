@@ -3,6 +3,7 @@ package ui
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +19,7 @@ func TestHandlerRejectsUnknownPathsAndMethods(t *testing.T) {
 		{http.MethodGet, "/../handler.go", http.StatusNotFound},
 		{http.MethodPost, "/", http.StatusMethodNotAllowed},
 		{http.MethodHead, "/", http.StatusOK},
+		{http.MethodGet, "/", http.StatusOK},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -27,6 +29,12 @@ func TestHandlerRejectsUnknownPathsAndMethods(t *testing.T) {
 			}
 			if tc.method == http.MethodHead && response.Body.Len() != 0 {
 				t.Fatal("HEAD returned response body")
+			}
+			if tc.status == http.StatusOK {
+				csp := response.Header().Get("Content-Security-Policy")
+				if strings.Contains(csp, "unsafe-eval") || strings.Contains(csp, "wasm-unsafe-eval") {
+					t.Fatalf("CSP retains unsafe eval directives: %q", csp)
+				}
 			}
 		})
 	}

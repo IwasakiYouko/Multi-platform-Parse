@@ -1,4 +1,4 @@
-"""Build-time installer shared by Debian images and CI; never invoked by the app."""
+"""Build-time installer shared by Alpine images and CI; never invoked by the app."""
 
 import argparse
 import hashlib
@@ -20,11 +20,19 @@ import zipfile
 LOCK = Path(__file__).with_name("ytdlp-runtime.lock.json")
 
 
-def select_wheels(artifacts, python_version):
-    selected = [item for item in artifacts if item.get("python", python_version) == python_version]
+def detect_libc():
+    return "glibc" if platform.libc_ver()[0] == "glibc" else "musl"
+
+
+def select_wheels(artifacts, python_version, libc="glibc"):
+    selected = [
+        item for item in artifacts
+        if item.get("python", python_version) == python_version
+        and item.get("libc", libc) == libc
+    ]
     required = {item["name"] for item in artifacts}
     if {item["name"] for item in selected} != required or len(selected) != len(required):
-        raise ValueError("no unique locked runtime wheel set for CPython " + python_version)
+        raise ValueError(f"no unique locked runtime wheel set for CPython {python_version} ({libc})")
     return selected
 
 
@@ -53,6 +61,7 @@ def download(artifact, destination, attempts=4, delay=2.0):
             if attempt >= attempts:
                 raise err
         time.sleep(delay * attempt)
+
 
 def install_deno(archive, destination):
     with zipfile.ZipFile(archive) as package:
@@ -100,7 +109,7 @@ def copy_deno_notices(artifact, docs):
     (docs / artifact["filename"]).write_bytes(payload)
 
 
-def install(environment, deno, docs):
+def install(environment, deno, docs, skip_deno=False):
     lock = json.loads(LOCK.read_text())
     minimum = tuple(map(int, lock["python_minimum"].split(".")))
     if sys.version_info[:2] < minimum:
@@ -109,7 +118,8 @@ def install(environment, deno, docs):
         raise ValueError("the pinned runtime supports Linux amd64 only")
     if sys.implementation.name != "cpython":
         raise ValueError("the pinned native wheels require CPython")
-    artifacts = select_wheels(lock["wheels"], f"{sys.version_info.major}.{sys.version_info.minor}")
+    libc = detect_libc()
+    artifacts = select_wheels(lock["wheels"], f"{sys.version_info.major}.{sys.version_info.minor}", libc)
     # A clean venv has neither global packages nor pip, setuptools, or plugins.
     if environment.exists():
         raise ValueError("runtime environment already exists: " + str(environment))
@@ -127,17 +137,18 @@ def install(environment, deno, docs):
             destination = docs / "python-sources" / artifact["filename"]
             destination.parent.mkdir(parents=True, exist_ok=True)
             download(artifact, destination)
-        archive = root / lock["deno"]["filename"]
-        download(lock["deno"], archive)
-        download(lock["deno_license"], docs / "deno.LICENSE")
-        copy_deno_notices(lock["deno_notices"], docs)
+        if not skip_deno:
+            archive = root / lock["deno"]["filename"]
+            download(lock["deno"], archive)
+            download(lock["deno_license"], docs / "deno.LICENSE")
+            copy_deno_notices(lock["deno_notices"], docs)
+            install_deno(archive, deno)
         venv.EnvBuilder(with_pip=False).create(environment)
         subprocess.run([
             sys.executable, "-I", "-m", "pip", "--isolated", "--python",
             str(environment / "bin/python"), "install", "--no-index", "--no-deps",
             "--no-compile", "--disable-pip-version-check", *wheels,
         ], check=True)
-        install_deno(archive, deno)
     shutil.copyfile(LOCK, docs / LOCK.name)
     (docs / "python-packages.tsv").write_text(
         "name\tversion\twheel_sha256\turl\n" + "".join(
@@ -145,13 +156,18 @@ def install(environment, deno, docs):
             for artifact in artifacts
         )
     )
-    (docs / "runtime-provenance.json").write_text(json.dumps({
+    provenance = {
         "python": sys.version,
         "python_executable": sys.executable,
-        "python_distribution": "OS package; see debian-packages.tsv and /usr/share/doc/python3*/copyright in the image",
-        "deno": lock["deno"],
-        "deno_source_commit": "fe7ed012d92c642fd8e5607ac5a45d517538b5c5",
-    }, indent=2) + "\n")
+        "libc": libc,
+        "python_distribution": "OS package; see alpine-packages.txt in the image",
+    }
+    if skip_deno:
+        provenance["deno"] = "OS package (/usr/bin/deno); see alpine-packages.txt in the image"
+    else:
+        provenance["deno"] = lock["deno"]
+        provenance["deno_source_commit"] = "fe7ed012d92c642fd8e5607ac5a45d517538b5c5"
+    (docs / "runtime-provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
 
 
 if __name__ == "__main__":
@@ -159,5 +175,6 @@ if __name__ == "__main__":
     parser.add_argument("--venv", type=Path, default=Path("/opt/yt-dlp"))
     parser.add_argument("--deno", type=Path, default=Path("/usr/local/bin/deno"))
     parser.add_argument("--docs", type=Path, default=Path("/usr/local/share/doc/multiparse/ytdlp-runtime"))
+    parser.add_argument("--skip-deno", action="store_true", help="use OS-packaged Deno instead of downloading glibc Deno")
     args = parser.parse_args()
-    install(args.venv.absolute(), args.deno.absolute(), args.docs.absolute())
+    install(args.venv.absolute(), args.deno.absolute(), args.docs.absolute(), skip_deno=args.skip_deno)

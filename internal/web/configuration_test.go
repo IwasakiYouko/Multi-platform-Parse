@@ -1,12 +1,9 @@
 package web
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -113,95 +110,6 @@ func TestPreparedRuntimeIsAppliedOnlyAfterCommit(t *testing.T) {
 				}
 			} else if err != nil || !applied || discarded || !notified {
 				t.Fatalf("successful lifecycle: applied=%v discarded=%v notified=%v err=%v", applied, discarded, notified, err)
-			}
-		})
-	}
-}
-
-func TestPartialCapUpdateRestoresIndependentlyOfCanceledRequest(t *testing.T) {
-	for _, failRestore := range []bool{false, true} {
-		t.Run(map[bool]string{false: "restore", true: "fail-closed"}[failRestore], func(t *testing.T) {
-			state, err := store.Open(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer state.Close()
-			server, err := New(state, Hooks{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer server.Close()
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			var mu sync.Mutex
-			level := 4
-			restoreAttempted := false
-			capServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				mu.Lock()
-				defer mu.Unlock()
-				switch r.Method {
-				case http.MethodPut:
-					if server.capConfigured(state.Config()) {
-						t.Error("login remained enabled during Cap mutation")
-					}
-					var body struct {
-						Level int `json:"obfuscationLevel"`
-					}
-					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-						t.Error(err)
-						http.Error(w, "bad JSON", 400)
-						return
-					}
-					if body.Level == 4 {
-						restoreAttempted = true
-						if failRestore {
-							http.Error(w, "restore unavailable", 503)
-							return
-						}
-					}
-					level = body.Level
-					_, _ = w.Write([]byte(`{"success":true}`))
-				case http.MethodGet:
-					if level == 1 {
-						cancel()
-						http.Error(w, "readback interrupted", 503)
-						return
-					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"key": map[string]any{"config": map[string]any{"instrumentation": true, "obfuscationLevel": level, "protocol": "sha256-pow"}}})
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			defer capServer.Close()
-			old := state.Config()
-			old.Security.CapURL = capServer.URL
-			old.Security.CapSiteKey = "site"
-			old.Security.CapSecret = "site-secret"
-			if err = state.SaveConfig(old); err != nil {
-				t.Fatal(err)
-			}
-			server.markCapReady(old, "Bearer test-session", true)
-			updated := state.Config()
-			updated.Security.CapLevel = 1
-			request := httptest.NewRequest(http.MethodPut, "/api/config", nil).WithContext(ctx)
-			if err = server.applyConfig(request, updated); err == nil {
-				t.Fatal("partial update reported success")
-			}
-			mu.Lock()
-			actual, attempted := level, restoreAttempted
-			mu.Unlock()
-			if !attempted {
-				t.Fatal("canceled request prevented independent restore")
-			}
-			if state.Config().Security.CapLevel != 4 {
-				t.Fatal("partial update persisted")
-			}
-			if failRestore {
-				if server.capConfigured(old) {
-					t.Fatal("failed restore reopened login")
-				}
-			} else if actual != 4 || !server.capConfigured(old) {
-				t.Fatalf("old enforcement not restored: level=%d ready=%v", actual, server.capConfigured(old))
 			}
 		})
 	}

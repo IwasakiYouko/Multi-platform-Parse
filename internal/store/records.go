@@ -156,7 +156,7 @@ func (s *Store) PruneRecords(now time.Time) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, q := range []string{"DELETE FROM tasks WHERE expires_at<=?", "DELETE FROM sessions WHERE expires_at<=?", "DELETE FROM cap_replays WHERE expires_at<=?", "DELETE FROM request_limits WHERE expires_at<=?", "DELETE FROM bans WHERE banned_until<=? AND window_start<=?"} {
+	for _, q := range []string{"DELETE FROM tasks WHERE expires_at<=?", "DELETE FROM sessions WHERE expires_at<=?", "DELETE FROM request_limits WHERE expires_at<=?", "DELETE FROM bans WHERE banned_until<=? AND window_start<=?"} {
 		var args []any
 		args = append(args, now.Unix())
 		if q == "DELETE FROM bans WHERE banned_until<=? AND window_start<=?" {

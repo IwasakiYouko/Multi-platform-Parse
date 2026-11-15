@@ -43,16 +43,25 @@ class RuntimePackagingTests(unittest.TestCase):
 
     def test_wheel_selection_requires_one_compatible_variant_per_package(self):
         artifacts = [
-            {"name": "brotli", "python": "3.11"},
-            {"name": "brotli", "python": "3.12"},
+            {"name": "brotli", "python": "3.11", "libc": "glibc"},
+            {"name": "brotli", "python": "3.11", "libc": "musl"},
+            {"name": "brotli", "python": "3.12", "libc": "glibc"},
             {"name": "requests"},
         ]
-        self.assertEqual(runtime.select_wheels(artifacts, "3.11"), [artifacts[0], artifacts[2]])
-        self.assertEqual(runtime.select_wheels(artifacts, "3.12"), [artifacts[1], artifacts[2]])
+        self.assertEqual(runtime.select_wheels(artifacts, "3.11", "glibc"), [artifacts[0], artifacts[3]])
+        self.assertEqual(runtime.select_wheels(artifacts, "3.11", "musl"), [artifacts[1], artifacts[3]])
+        self.assertEqual(runtime.select_wheels(artifacts, "3.12", "glibc"), [artifacts[2], artifacts[3]])
         with self.assertRaisesRegex(ValueError, "no unique locked"):
-            runtime.select_wheels(artifacts, "3.15")
+            runtime.select_wheels(artifacts, "3.12", "musl")
         with self.assertRaisesRegex(ValueError, "no unique locked"):
-            runtime.select_wheels(artifacts + [artifacts[0]], "3.11")
+            runtime.select_wheels(artifacts, "3.15", "glibc")
+        with self.assertRaisesRegex(ValueError, "no unique locked"):
+            runtime.select_wheels(artifacts + [artifacts[0]], "3.11", "glibc")
+        lock = json.loads(runtime.LOCK.read_text())
+        for py in ("3.11", "3.12", "3.13", "3.14"):
+            for libc in ("glibc", "musl"):
+                selected = runtime.select_wheels(lock["wheels"], py, libc)
+                self.assertEqual(len(selected), 11)
 
     def test_download_requires_both_locked_size_and_hash(self):
         payload = b"locked runtime"
