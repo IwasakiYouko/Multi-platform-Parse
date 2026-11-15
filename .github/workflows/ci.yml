@@ -44,7 +44,7 @@ jobs:
         run: |
           go mod download all
           go run ./scripts/licenses -out "$RUNNER_TEMP/dependency-licenses"
-      - name: Test runtime installer scripts
+      - name: Test runtime and source bundling scripts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Race tests
         run: go test -race -count=1 ./...
@@ -98,7 +98,7 @@ jobs:
           tags=()
           while IFS= read -r tag; do tags+=(--tag "$image:$tag"); done < "$RUNNER_TEMP/image-tags"
           docker build --platform linux/amd64 --target app --build-arg "VCS_REF=$GITHUB_SHA" "${tags[@]}" .
-      - name: Export Alpine package inventory
+      - name: Bundle exact Alpine copyleft corresponding sources
         if: github.ref_type == 'tag'
         env:
           VERSION: ${{ steps.tags.outputs.version }}
@@ -108,8 +108,10 @@ jobs:
           container=$(docker create "ghcr.io/iwasakiyouko/multi-platform-parse:$VERSION")
           trap 'docker rm -f "$container" > /dev/null' EXIT
           docker cp "$container:/usr/local/share/doc/multiparse/alpine-packages.txt" release/alpine-packages.txt
+          docker cp "$container:/usr/local/share/doc/multiparse/alpine-packages.tsv" release/alpine-packages.tsv
           docker rm "$container"
           trap - EXIT
+          python3 scripts/alpine_sources.py --inventory release/alpine-packages.tsv --output release --release "v$VERSION"
       - name: Push application image
         run: |
           set -euo pipefail
@@ -137,6 +139,7 @@ jobs:
           path.write_text(re.sub(r'^IMAGE_TAG=.*$', 'IMAGE_TAG=' + version, path.read_text(), flags=re.MULTILINE))
           PY
           (cd release && sha256sum "$archive" compose.yaml .env.example alpine-packages.txt > SHA256SUMS)
+          (cd release && sha256sum alpine-packages.tsv alpine-source-manifest.json multi-platform-parse-v*-alpine-gpl-sources.tar.gz* > ALPINE-SOURCES-SHA256SUMS)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: github.ref_type == 'tag'
         with:
@@ -181,7 +184,9 @@ jobs:
           - Removed Cap CAPTCHA / Valkey sidecar containers; authentication uses Argon2id password protection, forced initial password change, HttpOnly sessions, CSRF/same-origin validation, and persistent IP brute-force bans.
           - Migrated container base from Debian to Alpine (`alpine:3.24`) for a compact single-container deployment.
 
-          Offline / archive installation: download the `.tar.gz` image archive, `SHA256SUMS`, `compose.yaml`, `alpine-packages.txt`, and `default.env.example` from this Release. Rename `default.env.example` to `.env.example`, verify with `sha256sum -c SHA256SUMS`, load the archive with the command above, copy `.env.example` to `.env`, create `certs/`, and run `docker compose up -d --no-build`. See `README.md` and `CHANGELOG.md` for full details and upgrade instructions from v1.x.
+          Offline / archive installation: download the `.tar.gz` image archive, `SHA256SUMS`, `compose.yaml`, `alpine-packages.txt`, and `default.env.example` from this Release. Save `default.env.example` locally as `.env.example`, verify with `sha256sum -c SHA256SUMS`, load the image archive with the command above, copy `.env.example` to `.env`, create `certs/`, and run `docker compose up -d --no-build`.
+
+          Alpine copyleft corresponding sources: every GPL/LGPL/AGPL package installed in the image (including `ffmpeg`, `busybox`, `gcc` runtime libraries, `x264`, `x265`, etc.) is recorded with its exact Alpine `aports` commit in `alpine-packages.tsv` and bundled with SHA-512-verified `APKBUILD`, local patches, and upstream source tarballs in `multi-platform-parse-*-alpine-gpl-sources.tar.gz*` alongside `alpine-source-manifest.json` and `ALPINE-SOURCES-SHA256SUMS` (`sha256sum -c ALPINE-SOURCES-SHA256SUMS`).
           NOTES
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release/* --clobber

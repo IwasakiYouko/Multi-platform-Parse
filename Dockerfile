@@ -9,10 +9,12 @@ COPY scripts/licenses ./scripts/licenses
 RUN --mount=type=cache,target=/root/.cache/go-build go run ./scripts/licenses -out /out/licenses
 RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/multiparse ./cmd/multiparse
 
-# Only build tooling has pip; the isolated runtime contains locked yt-dlp default dependencies.
+# Only build tooling has pip; the isolated runtime contains locked yt-dlp default dependencies
+# and verifies the Alpine Deno binary against its exact bundled third-party notice archive.
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS ytdlp-runtime
-RUN apk add --no-cache ca-certificates python3 py3-pip
+RUN apk add --no-cache ca-certificates python3 py3-pip deno
 COPY scripts/install_ytdlp_runtime.py scripts/ytdlp-runtime.lock.json /runtime/
+COPY scripts/runtime-licenses/ /runtime/runtime-licenses/
 RUN /usr/bin/python3 /runtime/install_ytdlp_runtime.py --skip-deno
 
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS app
@@ -26,7 +28,8 @@ RUN apk add --no-cache ca-certificates ffmpeg tzdata python3 deno \
  && mkdir -p /usr/local/bin /data /media /certs /usr/local/share/doc/multiparse \
  && ln -sf /usr/bin/deno /usr/local/bin/deno \
  && chown 1000:1000 /data /media /certs \
- && apk info -v | sort > /usr/local/share/doc/multiparse/alpine-packages.txt
+ && apk info -v | sort > /usr/local/share/doc/multiparse/alpine-packages.txt \
+ && awk 'BEGIN{RS=""; FS="\n"} {p=v=o=c=l=""; for(i=1;i<=NF;i++){k=substr($i,1,2); val=substr($i,3); if(k=="P:")p=val; else if(k=="V:")v=val; else if(k=="o:")o=val; else if(k=="c:")c=val; else if(k=="L:")l=val} if(p!=""){if(o=="")o=p; printf "%s\t%s\t%s\t%s\t%s\n", p, v, o, c, l}}' /lib/apk/db/installed | sort > /usr/local/share/doc/multiparse/alpine-packages.tsv
 COPY --from=build /out/multiparse /usr/local/bin/multiparse
 COPY THIRD_PARTY_NOTICES.md /usr/local/share/doc/multiparse/
 COPY --from=build /out/licenses/ /usr/local/share/doc/multiparse/

@@ -93,6 +93,7 @@
     bans: [],
     pollTimer: null,
     reauthCallback: null,
+    reauthReturnFocus: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -345,6 +346,7 @@
   }
 
   async function loadAllData(resetDraft = false) {
+    const wasDirty = state.draft ? isDirty() : false;
     const [platforms, cfg, status, tasks, cache, bans] = await Promise.all([
       api('/api/platforms'),
       api('/api/config'),
@@ -355,7 +357,7 @@
     ]);
     state.platforms = platforms || [];
     state.config = cfg;
-    if (resetDraft || !state.draft || !isDirty()) {
+    if (resetDraft || !state.draft || !wasDirty) {
       state.draft = deepClone(cfg);
     }
     state.status = status;
@@ -419,19 +421,62 @@
     }
   }
 
+  function isReauthModalOpen() {
+    const modal = $('reauth-modal');
+    return Boolean(modal && (modal.open || modal.hasAttribute('open')));
+  }
+
   function openReauthModal(title, desc, onConfirm) {
+    const modal = $('reauth-modal');
+    state.reauthReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     $('reauth-title').textContent = title || '安全验证';
     $('reauth-desc').textContent = desc || '请输入当前管理员密码确认此敏感操作。';
     $('reauth-password').value = '';
     state.reauthCallback = onConfirm;
-    $('reauth-modal').classList.remove('hidden');
-    setTimeout(() => $('reauth-password').focus(), 30);
+    if (typeof modal.showModal === 'function') {
+      if (!modal.open) modal.showModal();
+    } else {
+      modal.setAttribute('open', '');
+    }
+    setTimeout(() => $('reauth-password').focus(), 20);
   }
 
   function closeReauthModal() {
-    $('reauth-modal').classList.add('hidden');
+    const modal = $('reauth-modal');
+    if (modal) {
+      if (typeof modal.close === 'function' && modal.open) {
+        modal.close();
+      } else {
+        modal.removeAttribute('open');
+      }
+    }
     $('reauth-password').value = '';
     state.reauthCallback = null;
+    if (state.reauthReturnFocus && typeof state.reauthReturnFocus.focus === 'function') {
+      state.reauthReturnFocus.focus();
+    }
+    state.reauthReturnFocus = null;
+  }
+
+  function syncSavedSecretsIntoNewerDraft(submitted, fresh, currentDraft) {
+    if (!submitted || !fresh || !currentDraft) return;
+    if (submitted.onebot && fresh.onebot && currentDraft.onebot && currentDraft.onebot.token === submitted.onebot.token) {
+      currentDraft.onebot.token = fresh.onebot.token;
+    }
+    if (submitted.proxy && fresh.proxy && currentDraft.proxy && currentDraft.proxy.url === submitted.proxy.url) {
+      currentDraft.proxy.url = fresh.proxy.url;
+    }
+    if (submitted.platforms && fresh.platforms && currentDraft.platforms) {
+      for (const id of Object.keys(fresh.platforms)) {
+        if (
+          currentDraft.platforms[id]
+          && submitted.platforms[id]
+          && currentDraft.platforms[id].cookie === submitted.platforms[id].cookie
+        ) {
+          currentDraft.platforms[id].cookie = fresh.platforms[id].cookie;
+        }
+      }
+    }
   }
 
   async function saveDraftConfig() {
@@ -445,10 +490,16 @@
       if (currentPassword) {
         headers['X-Current-Password'] = currentPassword;
       }
-      await api('/api/config', { method: 'PUT', headers, body: state.draft });
+      const submittedDraft = deepClone(state.draft);
+      const submittedSnapshot = JSON.stringify(submittedDraft);
+      await api('/api/config', { method: 'PUT', headers, body: submittedDraft });
       const fresh = await api('/api/config');
       state.config = fresh;
-      state.draft = deepClone(fresh);
+      if (JSON.stringify(state.draft) === submittedSnapshot) {
+        state.draft = deepClone(fresh);
+      } else {
+        syncSavedSecretsIntoNewerDraft(submittedDraft, fresh, state.draft);
+      }
       updateDirtyBar();
       renderRoute();
       if (state.drawerPlatformId) {
@@ -853,7 +904,7 @@
               <div class="platform-id mono">${esc(p.id)} · ${(p.types || []).map(typeName).join(' / ')}</div>
             </div>
             <label class="switch" title="启用或停用 ${esc(p.name)}">
-              <input type="checkbox" data-action="toggle-platform-enabled" data-platform="${esc(p.id)}" ${pol.enabled ? 'checked' : ''}>
+              <input type="checkbox" aria-label="启用 ${esc(p.name)} 解析" data-action="toggle-platform-enabled" data-platform="${esc(p.id)}" ${pol.enabled ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
@@ -893,7 +944,7 @@
               <span>全局默认附带标题/作者/链接文本</span>
             </div>
             <label class="switch">
-              <input type="checkbox" data-bind="media.show_info" ${media.show_info ? 'checked' : ''}>
+              <input type="checkbox" aria-label="输出文本信息块" data-bind="media.show_info" ${media.show_info ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
@@ -903,7 +954,7 @@
               <span>图文首条消息展示视频高清封面</span>
             </div>
             <label class="switch">
-              <input type="checkbox" data-bind="media.show_cover" ${media.show_cover ? 'checked' : ''}>
+              <input type="checkbox" aria-label="附带视频封面图" data-bind="media.show_cover" ${media.show_cover ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
@@ -913,7 +964,7 @@
               <span>剥离 vd_source / spm_id_from / utm_* 等尾巴</span>
             </div>
             <label class="switch">
-              <input type="checkbox" data-bind="media.clean_url" ${media.clean_url ? 'checked' : ''}>
+              <input type="checkbox" aria-label="自动净化分享追踪参数" data-bind="media.clean_url" ${media.clean_url ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
@@ -1023,7 +1074,7 @@
             <span>关闭后不再自动解析此平台链接</span>
           </div>
           <label class="switch">
-            <input type="checkbox" data-drawer-field="enabled" ${pol.enabled ? 'checked' : ''}>
+            <input type="checkbox" aria-label="启用该平台解析" data-drawer-field="enabled" ${pol.enabled ? 'checked' : ''}>
             <span class="switch-slider"></span>
           </label>
         </div>
@@ -1033,7 +1084,7 @@
             <span>代理模式为「仅海外平台」时走代理</span>
           </div>
           <label class="switch">
-            <input type="checkbox" data-drawer-field="overseas" ${pol.overseas ? 'checked' : ''}>
+            <input type="checkbox" aria-label="归属海外分流" data-drawer-field="overseas" ${pol.overseas ? 'checked' : ''}>
             <span class="switch-slider"></span>
           </label>
         </div>
@@ -1043,7 +1094,7 @@
             <span>开启后拒绝解析此平台内容</span>
           </div>
           <label class="switch">
-            <input type="checkbox" data-drawer-field="nsfw_blocked" ${pol.nsfw_blocked ? 'checked' : ''}>
+            <input type="checkbox" aria-label="NSFW 风险拦截" data-drawer-field="nsfw_blocked" ${pol.nsfw_blocked ? 'checked' : ''}>
             <span class="switch-slider"></span>
           </label>
         </div>
@@ -1053,7 +1104,7 @@
             <span>平台停用或拦截时不向群内发送提示</span>
           </div>
           <label class="switch">
-            <input type="checkbox" data-drawer-field="silent" ${pol.silent ? 'checked' : ''}>
+            <input type="checkbox" aria-label="拒绝时保持静默" data-drawer-field="silent" ${pol.silent ? 'checked' : ''}>
             <span class="switch-slider"></span>
           </label>
         </div>
@@ -1194,33 +1245,33 @@
 
           <div class="switch-row">
             <div class="switch-row-text">
-              <strong>启用消息自动解析总开关</strong>
+              <strong id="label-policy-enabled">启用消息自动解析总开关</strong>
               <span>关闭后所有群聊与私聊消息均不再触发自动解析</span>
             </div>
             <label class="switch">
-              <input type="checkbox" data-bind="policy.enabled" ${pol.enabled ? 'checked' : ''}>
+              <input type="checkbox" aria-labelledby="label-policy-enabled" data-bind="policy.enabled" ${pol.enabled ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
 
           <div class="switch-row">
             <div class="switch-row-text">
-              <strong>允许私聊消息解析</strong>
+              <strong id="label-policy-private">允许私聊消息解析</strong>
               <span>开启后机器人好友或私聊发送链接也可触发解析</span>
             </div>
             <label class="switch">
-              <input type="checkbox" data-bind="policy.private_enabled" ${pol.private_enabled ? 'checked' : ''}>
+              <input type="checkbox" aria-labelledby="label-policy-private" data-bind="policy.private_enabled" ${pol.private_enabled ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
 
           <div class="switch-row">
             <div class="switch-row-text">
-              <strong>群聊消息引用回复原发送者</strong>
+              <strong id="label-policy-group-reply">群聊消息引用回复原发送者</strong>
               <span>发送首条图文结果时自动挂载 OneBot <code>reply</code> 段引用原链接消息</span>
             </div>
             <label class="switch">
-              <input type="checkbox" data-bind="policy.group_reply" ${pol.group_reply ? 'checked' : ''}>
+              <input type="checkbox" aria-labelledby="label-policy-group-reply" data-bind="policy.group_reply" ${pol.group_reply ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
@@ -1272,11 +1323,11 @@
 
           <div class="switch-row">
             <div class="switch-row-text">
-              <strong>自动下载与处理媒体文件</strong>
+              <strong id="label-media-auto-download">自动下载与处理媒体文件</strong>
               <span>关闭后仅解析元数据与链接，不下载图片或视频到本地</span>
             </div>
             <label class="switch">
-              <input type="checkbox" data-bind="media.auto_download" ${m.auto_download ? 'checked' : ''}>
+              <input type="checkbox" aria-labelledby="label-media-auto-download" data-bind="media.auto_download" ${m.auto_download ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
@@ -1406,11 +1457,11 @@
 
           <div class="switch-row">
             <div class="switch-row-text">
-              <strong>启用原生 HTTPS / WSS (TLS)</strong>
+              <strong id="label-server-tls">启用原生 HTTPS / WSS (TLS)</strong>
               <span>开启后需成对提供容器内可读的证书与私钥路径；若前置 Nginx 反代请保持关闭并配置受信反代 IP</span>
             </div>
             <label class="switch">
-              <input type="checkbox" data-bind="server.tls" ${srv.tls ? 'checked' : ''}>
+              <input type="checkbox" aria-labelledby="label-server-tls" data-bind="server.tls" ${srv.tls ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
@@ -1793,8 +1844,17 @@
     });
     $('drawer-save-now-btn').addEventListener('click', saveDraftConfig);
 
-    // 密码重验弹窗
+    // 密码重验弹窗（原生 <dialog> 支持焦点锁定与背景隔离）
     $('reauth-cancel').addEventListener('click', closeReauthModal);
+    $('reauth-modal').addEventListener('cancel', (e) => {
+      e.preventDefault();
+      closeReauthModal();
+    });
+    $('reauth-modal').addEventListener('click', (e) => {
+      if (e.target === $('reauth-modal')) {
+        closeReauthModal();
+      }
+    });
     $('reauth-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const pwd = $('reauth-password').value;
@@ -1817,7 +1877,7 @@
           saveDraftConfig();
         }
       } else if (e.key === 'Escape') {
-        if (!$('reauth-modal').classList.contains('hidden')) {
+        if (isReauthModalOpen()) {
           closeReauthModal();
         } else if (state.drawerPlatformId) {
           closeDrawer();
@@ -2008,6 +2068,7 @@
           '轮换 OneBot Access Token',
           '轮换密钥会立即断开当前旧 Token 连接，请输入当前管理员密码确认。',
           async (pwd) => {
+            const wasDirty = isDirty();
             const res = await api('/api/onebot/token', {
               method: 'POST',
               body: { current_password: pwd },
@@ -2015,7 +2076,11 @@
             state.rotatedToken = res.token || '';
             const fresh = await api('/api/config');
             state.config = fresh;
-            state.draft = deepClone(fresh);
+            if (!wasDirty || !state.draft) {
+              state.draft = deepClone(fresh);
+            } else if (state.draft.onebot && fresh.onebot) {
+              state.draft.onebot.token = fresh.onebot.token;
+            }
             updateDirtyBar();
             renderRoute();
             toast('OneBot Token 已轮换，请复制新密钥', 'success');

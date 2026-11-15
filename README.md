@@ -154,16 +154,16 @@ v2.0.0 将解析输出划分为独立的消息区块变量。可在面板「媒�
 
 ### 支持的模板变量
 
-| 区块变量（自带中文标签前缀） | 纯值变量（不含前缀，便于自定义拼接） | 展开说明 |
+| 区块变量（自带格式前缀或括号） | 纯值变量（不含前缀，便于自定义拼接） | 展开说明 |
 |---|---|---|
-| `{title}` → `标题：...` | `{raw_title}` | 作品标题（截断至 240 字符） |
-| `{author}` → `作者：...` | `{raw_author}` | 作者昵称（截断至 120 字符） |
-| `{content}` → `简介：...` | `{raw_content}` | 作品正文/简介（截断至 600 字符；若与标题完全一致则自动置空去重） |
+| `{title}` → `【...】` | `{raw_title}` | 作品标题（截断至 300 字符） |
+| `{author}` → `作者：...` | `{raw_author}` | 作者昵称（截断至 100 字符） |
+| `{content}` → 正文无前缀 | `{raw_content}` | 作品正文/简介（无额外标签前缀，优先使用富文本 Markdown，截断至 1800 字符；若同时引用标题变量且与标题完全一致则自动置空去重） |
 | `{url}` → `链接：...` | `{raw_url}` | 作品链接（开启全局「链接净化」后自动去除追踪参数） |
 | `{clean_url}` → `链接：...` | `{raw_clean_url}` | 始终去除 `utm_*`、`spm_id_from`、`vd_source`、`share_*`、`igsh` 等追踪参数的纯净链接 |
-| `{platform}` → `平台：...` | `{raw_platform}` | 平台中文名称（如 `哔哩哔哩`、`抖音`） |
-| `{type}` → `类型：...` | `{raw_type}` | 内容类型（`视频`、`图文`、`动态`、`文章`） |
-| `{media_stats}` | — | 媒体数量摘要（如 `1 个视频`、`6 张图片`、`3 张实况图`） |
+| `{platform}` → `[...]` | `{raw_platform}` | 带方括号的平台中文名称（如 `[哔哩哔哩]`、`[抖音]`；纯值变量输出 `哔哩哔哩`） |
+| `{type}` → `[...]` | `{raw_type}` | 带方括号的内容类型（如 `[视频]`、`[图集]`、`[文章]`、`[音频]`、`[实况图]`、`[动态]`；纯值变量不含方括号） |
+| `{media_stats}` → `共 ...` | — | 媒体数量摘要（如 `共 1 个视频`、`共 6 张图片`、`共 3 张实况图`） |
 
 **智能空行折叠规则**：支持在模板中混合任意自定义文字、符号或 Emoji（例如 `🎬 【{raw_platform}】{raw_title}`）。若模板中某一行包含变量占位符，且该行引用的**所有**变量在当前作品中均为空（例如无作者信息，或正文因与标题重复而被去重），引擎会自动折叠整行，不会残留突兀的前缀文字或连续多余空行；纯静态装饰行（不含任何 `{...}` 变量）则原样保留。
 
@@ -184,7 +184,7 @@ docker compose -f compose.yaml -f compose.build.yaml up -d --build --wait
 
 `compose.yaml` 是仅镜像部署配置，`compose.build.yaml` 才添加本地构建目标。修改源码后使用同一条带 `--build` 的命令重新构建。
 
-本机需要执行这三个平台的实际后端验证时，使用 CPython 3.11–3.14 的 Linux amd64 环境（兼容 glibc 与 Alpine musl），在临时目录安装同版本工具。安装器会核对锁定附件的大小和 SHA-256，不修改系统 Python：
+本机需要执行这三个平台的实际后端验证时，使用 CPython 3.11–3.14 的 Linux amd64 环境（兼容 glibc 与 Alpine musl；若在 Alpine musl 本机运行请先执行 `apk add deno` 安装系统 Deno），在临时目录安装同版本工具。安装器会核对锁定附件的大小和 SHA-256，不修改系统 Python：
 
 ```bash
 TOOLS_DIR="$(mktemp -d)"
@@ -198,7 +198,7 @@ export YTDLP_JS_RUNTIME="$TOOLS_DIR/deno"
 "$YTDLP_PYTHON" -I scripts/check_ytdlp_runtime.py
 ```
 
-锁定版本为 yt-dlp `2026.10.26.220202.dev0`、EJS `0.8.0`（Ubuntu CI 锁定 Deno `2.9.8`，Alpine 镜像使用系统 `deno` 并开启 `--skip-deno`），附件和默认依赖见 `scripts/ytdlp-runtime.lock.json`。运行服务时不会自动下载或升级这些工具；缺少运行时会明确报错，不返回伪造的解析结果。
+锁定版本为 yt-dlp `2026.10.26.220202.dev0`、EJS `0.8.0`；glibc 环境下载锁定的 Deno `2.9.8`，Alpine musl 环境自动链接系统 `/usr/bin/deno`（或容器构建时使用 `--skip-deno` 直接指向 `/usr/bin/deno`）并核验内嵌 `.dep-v0` 依赖清单与随附许可归档 `deno-2.7.4-alpine-third-party.tar.gz`，附件和默认依赖见 `scripts/ytdlp-runtime.lock.json`。运行服务时不会自动下载或升级这些工具；缺少运行时会明确报错，不返回伪造的解析结果。
 
 ```bash
 go test -race ./...
@@ -335,8 +335,8 @@ unset PASSWORD
 
 工作流定义：[`ci.yml`](.github/workflows/ci.yml)。
 
-- PR 到 `main` 或推送 `main`：安装 FFmpeg 和固定提取运行时，运行离线 EJS 检查、全量竞态测试（`-race`）、`go vet`、编译、许可证收集、运行时安装器单测、Compose 校验及 Alpine 非 root 离线容器冒烟检查；不发布镜像。
-- 推送 `vMAJOR.MINOR.PATCH`：检查成功后构建单容器 Alpine 镜像，导出 `alpine-packages.txt` 软件包清单，推送版本标签、`latest` 和 `sha-<完整提交SHA>` 至 GHCR，并创建公开 GitHub Release（附离线镜像归档、`compose.yaml`、`default.env.example`、`alpine-packages.txt` 与 `SHA256SUMS`）。
+- PR 到 `main` 或推送 `main`：安装 FFmpeg 和固定提取运行时，运行离线 EJS 检查、全量竞态测试（`-race`）、`go vet`、编译、许可证收集、运行时与源码打包脚本单测、Compose 校验及 Alpine 非 root 离线容器冒烟检查；不发布镜像。
+- 推送 `vMAJOR.MINOR.PATCH`：检查成功后构建单容器 Alpine 镜像，导出 `alpine-packages.txt` 与 `alpine-packages.tsv` 软件包清单，自动拉取并按 `APKBUILD` SHA-512 校验镜像中全部 GPL/LGPL/AGPL 软件包（含 `ffmpeg`、`busybox`、`gcc` 运行库、`x264`、`x265` 等）的精确对应源码包与补丁，推送版本标签、`latest` 和 `sha-<完整提交SHA>` 至 GHCR，并创建公开 GitHub Release（附离线镜像归档、`compose.yaml`、`default.env.example`、`alpine-packages.txt`、`SHA256SUMS`，以及对应源码资产 `alpine-packages.tsv`、`alpine-source-manifest.json`、`multi-platform-parse-v*-alpine-gpl-sources.tar.gz*` 与 `ALPINE-SOURCES-SHA256SUMS`）。
 
 维护者发布示例：
 

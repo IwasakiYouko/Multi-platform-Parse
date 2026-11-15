@@ -85,10 +85,10 @@ Go 模块的精确版本见 `go.mod`、`go.sum`，包括 goquery、Gorilla WebSo
 
 `fhttp v0.7.3` 的源码声明使用 Go BSD 许可，但发行模块与该版本仓库均缺少独立 `LICENSE`。构建器从 `scripts/licenses/supplemental/` 随附其源码明确引用的 Go 许可原文及来源记录；仅匹配该精确模块版本，其他缺失许可证的模块仍使构建失败。这是对既有声明的补发，不为未声明的新贡献推定额外授权。
 
-FFmpeg、Alpine Linux（`alpine:3.24`）、Python、Deno 及镜像内系统软件包分别适用各自原始许可证，完整已安装软件包与精确版本记录于镜像内 `/usr/local/share/doc/multiparse/alpine-packages.txt`（及同版本 GitHub Release 附件）；原生 Go 静态构建不代表整个 Docker 镜像采用单一许可证。重新分发二进制或镜像时，应随附相关声明并满足对应组件的源代码提供等义务。
+FFmpeg、Alpine Linux（`alpine:3.24`）、Python、Deno 及镜像内系统软件包分别适用各自原始许可证，完整已安装软件包、许可证及精确 `aports` 提交记录于镜像内 `/usr/local/share/doc/multiparse/alpine-packages.txt` 与 `alpine-packages.tsv`；同版本 GitHub Release 随附经 `APKBUILD` SHA-512 校验的 GPL/LGPL/AGPL 软件包完整对应源码归档（`multi-platform-parse-v*-alpine-gpl-sources.tar.gz` 与 `alpine-source-manifest.json`）。原生 Go 静态构建不代表整个 Docker 镜像采用单一许可证。重新分发二进制或镜像时，应随附相关声明并满足对应组件的源代码提供等义务。
 
 ## yt-dlp、EJS、Deno 与 Python 运行时
 
-YouTube、Facebook、Snapchat 三个平台后端使用固定的 yt-dlp `2026.10.26.220202.dev0` 与 yt-dlp-ejs `0.8.0`；Alpine 容器镜像使用 `musllinux_1_2_x86_64` 锁定 wheel 及 Alpine 官方软件源提供的 `python3` 与 `deno`（`/usr/bin/deno`），Ubuntu CI 环境使用 `manylinux` 锁定 wheel 及 Deno `2.9.8`。固定附件、SHA-256、上游地址和默认依赖见 `scripts/ytdlp-runtime.lock.json`；构建时核验，运行时不自动下载组件。
+YouTube、Facebook、Snapchat 三个平台后端使用固定的 yt-dlp `2026.10.26.220202.dev0` 与 yt-dlp-ejs `0.8.0`；Alpine 容器镜像使用 `musllinux_1_2_x86_64` 锁定 wheel 及 Alpine 官方软件源提供的 `python3` 与 `deno`（`2.7.4`，`/usr/bin/deno`），Ubuntu CI 环境使用 `manylinux` 锁定 wheel 及 Deno `2.9.8`。固定附件、SHA-256、上游地址和默认依赖见 `scripts/ytdlp-runtime.lock.json`；构建时核验，运行时不自动下载组件。
 
-应用镜像的 `/usr/local/share/doc/multiparse/ytdlp-runtime/` 保存 Python 包清单、原始 wheel 许可元数据、EJS 内嵌 meriyah ISC / astring MIT 许可及来源记录。各 Python 组件分别遵循自身许可证，包括 Mutagen 的 GPL、certifi 的 MPL 以及 requests、urllib3、websockets、Brotli、pycryptodomex 等原始许可。Mutagen 同版本对应源码随镜像存放于该目录的 `python-sources/`。不能将整个运行时统一声明为本项目自有代码或 MIT。
+应用镜像的 `/usr/local/share/doc/multiparse/ytdlp-runtime/` 保存 Python 包清单、原始 wheel 许可元数据、EJS 内嵌 meriyah ISC / astring MIT 许可，以及与 Alpine Deno `2.7.4` 实际内嵌 `.dep-v0` 依赖树逐项核验匹配的 `deno.LICENSE` 与第三方 Rust/原生组件许可归档 `deno-2.7.4-alpine-third-party.tar.gz`。各 Python 组件分别遵循自身许可证，包括 Mutagen 的 GPL、certifi 的 MPL 以及 requests、urllib3、websockets、Brotli、pycryptodomex 等原始许可。Mutagen 同版本对应源码随镜像存放于该目录的 `python-sources/`。不能将整个运行时统一声明为本项目自有代码或 MIT。

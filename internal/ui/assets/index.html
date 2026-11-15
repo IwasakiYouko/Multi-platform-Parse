@@ -187,7 +187,7 @@
   </aside>
 
   <!-- 敏感操作密码确认弹窗 -->
-  <div id="reauth-modal" class="modal-backdrop hidden">
+  <dialog id="reauth-modal" class="modal-dialog" aria-labelledby="reauth-title" aria-describedby="reauth-desc">
     <div class="modal-card">
       <h3 id="reauth-title">安全验证</h3>
       <p id="reauth-desc" class="muted">本次修改涉及监听、安全策略、代理或凭据等敏感配置，请输入当前管理员密码确认。</p>
@@ -199,7 +199,7 @@
         </div>
       </form>
     </div>
-  </div>
+  </dialog>
 
   <input type="file" id="import-config-input" accept="application/json,.json" class="hidden">
   <script src="/app.js"></script>

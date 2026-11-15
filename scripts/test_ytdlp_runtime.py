@@ -41,6 +41,43 @@ class RuntimePackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "notices checksum/size"):
                 runtime.copy_deno_notices(changed, root)
 
+    def test_bundled_alpine_deno_notices_and_musl_linking(self):
+        lock = json.loads(runtime.LOCK.read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docs = root / "docs"
+            docs.mkdir()
+            fake_sys_deno = root / "usr-bin-deno"
+            fake_sys_deno.write_bytes(b"\x7fELF\x02\x01fake")
+            target_deno = root / "tools/deno"
+            lic_payload = b"MIT" * 358  # 1074 bytes
+            fake_lock = dict(lock)
+            fake_lock["deno_alpine_license"] = {
+                "url": Response.url,
+                "size": len(lic_payload),
+                "sha256": hashlib.sha256(lic_payload).hexdigest(),
+            }
+            with patch.object(runtime, "extract_elf_audit_crates", return_value={("serde", "1.0.228")}), \
+                 patch.object(runtime.urllib.request, "urlopen", return_value=Response(lic_payload)):
+                resolved = runtime.install_musl_deno(
+                    target_deno, docs, fake_lock, skip_deno=False, system_deno=fake_sys_deno
+                )
+            self.assertEqual(Path(resolved), fake_sys_deno.resolve())
+            self.assertTrue(target_deno.is_symlink())
+            self.assertEqual(target_deno.resolve(), fake_sys_deno.resolve())
+            self.assertTrue((docs / lock["deno_alpine_notices"]["filename"]).is_file())
+            self.assertEqual((docs / "deno.LICENSE").read_bytes(), lic_payload)
+            with tarfile.open(docs / lock["deno_alpine_notices"]["filename"], "r:gz") as bundle:
+                for path in (
+                    "Deno-LICENSE.md",
+                    "PROVENANCE.json",
+                    "native/v8/LICENSE",
+                    "native/rust-1.95.0/LICENSE-MIT",
+                ):
+                    self.assertGreater(bundle.getmember(path).size, 50)
+            with self.assertRaisesRegex(ValueError, "musl requires OS-packaged deno"):
+                runtime.install_musl_deno(target_deno, docs, fake_lock, system_deno=root / "missing-deno")
+
     def test_wheel_selection_requires_one_compatible_variant_per_package(self):
         artifacts = [
             {"name": "brotli", "python": "3.11", "libc": "glibc"},

@@ -199,5 +199,16 @@
     "url": "https://raw.githubusercontent.com/denoland/deno/fe7ed012d92c642fd8e5607ac5a45d517538b5c5/LICENSE.md",
     "sha256": "f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588",
     "size": 1074
+  },
+  "deno_alpine_notices": {
+    "filename": "deno-2.7.4-alpine-third-party.tar.gz",
+    "sha256": "de279b6fbfaa1ce16d44bbf4901d8aa961b972b5ae0686b16deba02e2f5e247a",
+    "size": 1980327
+  },
+  "deno_alpine_license": {
+    "filename": "deno.LICENSE",
+    "url": "https://raw.githubusercontent.com/denoland/deno/v2.7.4/LICENSE.md",
+    "sha256": "f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588",
+    "size": 1074
   }
 }

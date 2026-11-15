@@ -613,6 +613,12 @@ textarea:focus {
   background: var(--primary);
 }
 
+.switch input:focus-visible + .switch-slider {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
 .switch input:checked + .switch-slider::before {
   transform: translateX(18px);
 }
@@ -985,14 +991,21 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
-/* Slide-over Drawer */
-.drawer-backdrop,
+/* Slide-over Drawer & Mobile Sidebar Backdrops */
 .sidebar-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.48);
   backdrop-filter: blur(2px);
-  z-index: 45;
+  z-index: 40;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(2px);
+  z-index: 48;
 }
 
 .drawer {
@@ -1079,21 +1092,26 @@ tbody tr:hover {
 }
 
 /* Modal & Alerts & Toast */
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
+.modal-dialog {
+  border: none;
+  padding: 0;
+  margin: auto;
+  background: transparent;
+  color: var(--text);
+  max-width: min(440px, calc(100vw - 32px));
+  width: 100%;
+  overflow: visible;
+}
+
+.modal-dialog::backdrop {
   background: rgba(15, 23, 42, 0.55);
   backdrop-filter: blur(3px);
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
 }
 
 .modal-card {
   width: 100%;
   max-width: 420px;
+  margin: 0 auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -1192,6 +1210,7 @@ tbody tr:hover {
     top: 0;
     bottom: 0;
     width: 260px;
+    z-index: 45;
     transform: translateX(-100%);
     transition: transform 0.2s ease;
   }

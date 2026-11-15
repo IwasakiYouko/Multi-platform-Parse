@@ -7,14 +7,17 @@ from pathlib import Path, PurePosixPath
 import platform
 import shutil
 import stat
+import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
 import urllib.request
 import venv
 import zipfile
+import zlib
 
 
 LOCK = Path(__file__).with_name("ytdlp-runtime.lock.json")
@@ -109,6 +112,65 @@ def copy_deno_notices(artifact, docs):
     (docs / artifact["filename"]).write_bytes(payload)
 
 
+def extract_elf_audit_crates(binary):
+    data = binary.read_bytes()
+    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        raise ValueError("unexpected Deno ELF header")
+    e_shoff = struct.unpack_from("<Q", data, 40)[0]
+    e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", data, 58)
+    shstr_off, shstr_size = struct.unpack_from("<QQ", data, e_shoff + e_shstrndx * e_shentsize + 24)
+    shstr = data[shstr_off:shstr_off + shstr_size]
+    for idx in range(e_shnum):
+        base = e_shoff + idx * e_shentsize
+        sh_name = struct.unpack_from("<I", data, base)[0]
+        end = shstr.find(b"\x00", sh_name)
+        name = shstr[sh_name:end].decode("ascii", "replace")
+        if name == ".dep-v0":
+            off, size = struct.unpack_from("<QQ", data, base + 24)
+            audit = json.loads(zlib.decompress(data[off:off + size]))
+            return {
+                (pkg["name"], pkg["version"])
+                for pkg in audit.get("packages", [])
+                if pkg.get("kind", "runtime") != "build"
+                and pkg.get("source") == "crates.io"
+                and pkg.get("name") != "deno"
+            }
+    raise ValueError("Alpine Deno binary is missing cargo-auditable .dep-v0 metadata")
+
+
+def install_musl_deno(destination, docs, lock, skip_deno=False, system_deno=None):
+    found = Path(system_deno) if system_deno else None
+    if found is None:
+        which = shutil.which("deno")
+        found = Path(which) if which else Path("/usr/bin/deno")
+    if not found.is_file():
+        raise ValueError("musl requires OS-packaged deno (install via 'apk add deno')")
+    resolved = found.resolve()
+    linked_crates = extract_elf_audit_crates(resolved)
+
+    copy_deno_notices(lock["deno_alpine_notices"], docs)
+    notices_archive = docs / lock["deno_alpine_notices"]["filename"]
+    with tarfile.open(notices_archive, "r:gz") as bundle:
+        bundled_crates = {
+            m.name.split("/")[1]
+            for m in bundle.getmembers()
+            if m.isfile() and m.name.startswith("crates/")
+        }
+    needed_crates = {f"{n}-{v}" for n, v in linked_crates}
+    missing = needed_crates - bundled_crates
+    if missing:
+        sample = ", ".join(sorted(missing)[:5])
+        raise ValueError(f"bundled Alpine Deno notices missing linked crates: {sample}")
+    download(lock["deno_alpine_license"], docs / "deno.LICENSE")
+
+    if not skip_deno and destination.resolve() != resolved:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() or destination.is_symlink():
+            destination.unlink()
+        destination.symlink_to(resolved)
+    return str(resolved)
+
+
 def install(environment, deno, docs, skip_deno=False):
     lock = json.loads(LOCK.read_text())
     minimum = tuple(map(int, lock["python_minimum"].split(".")))
@@ -124,6 +186,7 @@ def install(environment, deno, docs, skip_deno=False):
     if environment.exists():
         raise ValueError("runtime environment already exists: " + str(environment))
     docs.mkdir(parents=True, exist_ok=True)
+    musl_deno_path = None
     with tempfile.TemporaryDirectory(prefix="ytdlp-runtime-") as temporary:
         root = Path(temporary)
         wheels = []
@@ -137,7 +200,9 @@ def install(environment, deno, docs, skip_deno=False):
             destination = docs / "python-sources" / artifact["filename"]
             destination.parent.mkdir(parents=True, exist_ok=True)
             download(artifact, destination)
-        if not skip_deno:
+        if libc == "musl":
+            musl_deno_path = install_musl_deno(deno, docs, lock, skip_deno=skip_deno)
+        elif not skip_deno:
             archive = root / lock["deno"]["filename"]
             download(lock["deno"], archive)
             download(lock["deno_license"], docs / "deno.LICENSE")
@@ -160,10 +225,12 @@ def install(environment, deno, docs, skip_deno=False):
         "python": sys.version,
         "python_executable": sys.executable,
         "libc": libc,
-        "python_distribution": "OS package; see alpine-packages.txt in the image",
+        "python_distribution": "OS package; see alpine-packages.tsv in the image" if libc == "musl" else "OS package",
     }
-    if skip_deno:
-        provenance["deno"] = "OS package (/usr/bin/deno); see alpine-packages.txt in the image"
+    if libc == "musl":
+        provenance["deno"] = f"OS package ({musl_deno_path}); verified against {lock['deno_alpine_notices']['filename']}"
+    elif skip_deno:
+        provenance["deno"] = "skipped (--skip-deno)"
     else:
         provenance["deno"] = lock["deno"]
         provenance["deno_source_commit"] = "fe7ed012d92c642fd8e5607ac5a45d517538b5c5"
@@ -175,6 +242,6 @@ if __name__ == "__main__":
     parser.add_argument("--venv", type=Path, default=Path("/opt/yt-dlp"))
     parser.add_argument("--deno", type=Path, default=Path("/usr/local/bin/deno"))
     parser.add_argument("--docs", type=Path, default=Path("/usr/local/share/doc/multiparse/ytdlp-runtime"))
-    parser.add_argument("--skip-deno", action="store_true", help="use OS-packaged Deno instead of downloading glibc Deno")
+    parser.add_argument("--skip-deno", action="store_true", help="skip linking/installing Deno binary while verifying notices")
     args = parser.parse_args()
     install(args.venv.absolute(), args.deno.absolute(), args.docs.absolute(), skip_deno=args.skip_deno)
