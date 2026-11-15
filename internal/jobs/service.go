@@ -523,6 +523,47 @@ func (s *Service) CleanupStatus() (int, string) {
 	defer s.cacheMu.Unlock()
 	return len(s.pending), s.lastCleanupError
 }
+
+func (s *Service) DeleteCacheEntry(key string) error {
+	if len(key) != 64 || key != strings.ToLower(key) {
+		return errors.New("无效的缓存键")
+	}
+	if _, err := hex.DecodeString(key); err != nil {
+		return errors.New("无效的缓存键")
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.leases[key] > 0 {
+		s.pending[key] = true
+		if e, err := s.st.GetCache(key); err == nil && e != nil {
+			e.ExpiresAt = time.Now().UTC()
+			_ = s.st.PutCache(*e)
+		}
+		return nil
+	}
+	return s.removeLocked(key)
+}
+
+func (s *Service) Preview(ctx context.Context, raw string) (*model.ParseResult, error) {
+	if len(raw) > 8192 || strings.TrimSpace(raw) == "" {
+		return nil, errors.New("请输入有效链接")
+	}
+	raw = netx.NormalizeURL(raw)
+	if _, ok := model.Identify(raw); !ok {
+		return nil, errors.New("不支持的平台链接")
+	}
+	previewCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	resolveFn := s.resolve
+	if resolveFn == nil {
+		resolveFn = parser.Resolve
+	}
+	res, err := resolveFn(previewCtx, s.st.Config(), raw)
+	if err != nil {
+		return nil, errors.New(safeError(err))
+	}
+	return res, nil
+}
 func (s *Service) janitor() {
 	defer s.wg.Done()
 	if err := s.Cleanup(false); err != nil {
@@ -571,34 +612,26 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 			initial = append(initial, model.Segment{Type: "image", Data: map[string]any{"file": s.mediaLocation(e, path, target)}})
 		}
 	}
+	showCover := policy.EffectiveShowCover(cfg, e.Platform)
 	for _, f := range e.Files {
 		if (f.Kind == "image" || f.Kind == "gif" || f.Kind == "livephoto") && !(f.Size > cfg.Media.MaxBytes && cfg.Media.OversizeMode == "file") {
 			addImage(f.Path)
 		}
-		if cfg.Media.ShowCover && f.Kind == "video" && f.ThumbPath != "" {
+		if showCover && f.Kind == "video" && f.ThumbPath != "" {
 			addImage(f.ThumbPath)
 		}
 	}
-	if cfg.Media.ShowInfo {
-		var b strings.Builder
-		if r.Title != "" {
-			fmt.Fprintf(&b, "【%s】\n", truncate(r.Title, 300))
+	if text := policy.FormatMessage(cfg, r, e.Files); text != "" {
+		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": text}})
+	} else if len(e.Files) == 0 {
+		fallbackURL := policy.DisplayURL(cfg, r.SourceURL)
+		if fallbackURL == "" {
+			fallbackURL = r.SourceURL
 		}
-		if r.Author != "" {
-			fmt.Fprintf(&b, "作者：%s\n", truncate(r.Author, 100))
-		}
-		content := r.Content
-		if r.MarkdownContent != "" {
-			content = r.MarkdownContent
-		}
-		if content != "" {
-			fmt.Fprintln(&b, truncate(content, 1800))
-		}
-		fmt.Fprintf(&b, "链接：%s", r.SourceURL)
-		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": b.String()}})
+		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": fallbackURL}})
 	}
-	if !cfg.Media.ShowInfo && len(e.Files) == 0 {
-		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": r.SourceURL}})
+	if len(initial) != 0 && cfg.Policy.GroupReply && target.GroupID != 0 && target.MessageID != "" {
+		initial = append([]model.Segment{{Type: "reply", Data: map[string]any{"id": target.MessageID}}}, initial...)
 	}
 	if len(initial) != 0 {
 		if err := check(); err != nil {

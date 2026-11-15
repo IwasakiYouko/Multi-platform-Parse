@@ -91,7 +91,7 @@ func Open(dataDir string) (*Store, error) {
  CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL, password TEXT NOT NULL, must_change INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1);
  CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS bans(ip TEXT PRIMARY KEY, failures INTEGER NOT NULL, window_start INTEGER NOT NULL, banned_until INTEGER NOT NULL);
- CREATE TABLE IF NOT EXISTS cap_replays(hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+ DROP TABLE IF EXISTS cap_replays;
  CREATE TABLE IF NOT EXISTS cache(cache_key TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, payload BLOB NOT NULL);
  CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, cache_key TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, payload BLOB NOT NULL);
  CREATE INDEX IF NOT EXISTS tasks_cache_key ON tasks(cache_key);
@@ -117,9 +117,11 @@ func Open(dataDir string) (*Store, error) {
 		if e != nil {
 			return fail(fmt.Errorf("decrypt configuration: %w", e))
 		}
+		s.cfg = model.DefaultConfig()
 		if e = json.Unmarshal(plain, &s.cfg); e != nil {
 			return fail(e)
 		}
+		model.NormalizeConfig(&s.cfg)
 	}
 	if err = s.bootstrapAdmin(); err != nil {
 		return fail(err)
@@ -172,25 +174,6 @@ func ValidateConfig(c model.Config) error {
 			return errors.New("外部URL必须为HTTP(S)源地址")
 		}
 	}
-	u, e := url.Parse(c.Security.CapURL)
-	if e != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Trim(u.Path, "/") != "" {
-		return errors.New("Cap地址必须为本机HTTP源地址")
-	}
-	ip := net.ParseIP(u.Hostname())
-	if ip == nil || !ip.IsLoopback() {
-		return errors.New("Cap必须仅通过loopback IP访问")
-	}
-	if _, _, e = net.SplitHostPort(u.Host); e != nil {
-		return errors.New("Cap地址必须包含端口")
-	}
-	if len(c.Security.CapSiteKey) > 128 {
-		return errors.New("Cap站点标识过长")
-	}
-	for _, r := range c.Security.CapSiteKey {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
-			return errors.New("Cap站点标识包含无效字符")
-		}
-	}
 	if (c.Server.CertFile == "") != (c.Server.KeyFile == "") {
 		return errors.New("证书和私钥必须成对配置")
 	}
@@ -198,13 +181,14 @@ func ValidateConfig(c model.Config) error {
 		return errors.New("TLS需要证书和私钥")
 	}
 	if c.Server.CertFile != "" {
-		if _, e = tls.LoadX509KeyPair(c.Server.CertFile, c.Server.KeyFile); e != nil {
+		if _, e := tls.LoadX509KeyPair(c.Server.CertFile, c.Server.KeyFile); e != nil {
 			return fmt.Errorf("证书和私钥不可读取或不匹配：%w", e)
 		}
 	}
 	return nil
 }
 func (s *Store) SaveConfig(c model.Config) error {
+	model.NormalizeConfig(&c)
 	if err := ValidateConfig(c); err != nil {
 		return err
 	}

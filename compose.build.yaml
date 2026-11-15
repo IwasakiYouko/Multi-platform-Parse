@@ -4,7 +4,3 @@ services:
     build:
       context: .
       target: app
-  cap:
-    build:
-      context: .
-      target: cap

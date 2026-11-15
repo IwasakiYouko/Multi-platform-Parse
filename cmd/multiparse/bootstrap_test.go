@@ -6,11 +6,10 @@ import (
 	"multiparse/internal/store"
 )
 
-func TestCapBootstrapDoesNotOverrideStoredSecurityPolicy(t *testing.T) {
-	for _, key := range []string{"LISTEN_ADDR", "START_PORT", "EXTERNAL_URL", "CAP_URL", "CAP_SITE_KEY", "CAP_SECRET"} {
-		t.Setenv(key, "")
-	}
-	t.Setenv("CAP_ENABLED", "false")
+func TestBootstrapAppliesOnceAndPreservesSavedConfig(t *testing.T) {
+	t.Setenv("LISTEN_ADDR", "127.0.0.1")
+	t.Setenv("START_PORT", "18080")
+	t.Setenv("EXTERNAL_URL", "https://parse.example.com")
 	directory := t.TempDir()
 	state, err := store.Open(directory)
 	if err != nil {
@@ -20,27 +19,26 @@ func TestCapBootstrapDoesNotOverrideStoredSecurityPolicy(t *testing.T) {
 	if err = bootstrap(state, directory); err != nil {
 		t.Fatal(err)
 	}
-	if !state.Config().Security.CapDisabled {
-		t.Fatal("explicit opt-out did not allow password-only deployment")
+	cfg := state.Config()
+	if cfg.Server.Listen != "127.0.0.1" || cfg.Server.Port != 18080 || cfg.Server.ExternalURL != "https://parse.example.com" {
+		t.Fatalf("bootstrap did not apply initial server settings: %+v", cfg.Server)
 	}
-	config := state.Config()
-	config.Security.CapDisabled = false
-	if err = state.SaveConfig(config); err != nil {
+	cfg.Server.Port = 19090
+	if err = state.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err = bootstrap(state, directory); err != nil {
 		t.Fatal(err)
 	}
-	if state.Config().Security.CapDisabled {
-		t.Fatal("stale deployment environment overrode the saved CAPTCHA policy")
+	if state.Config().Server.Port != 19090 {
+		t.Fatal("stale environment overrode saved configuration after bootstrap.done")
 	}
 }
 
-func TestInvalidCapBootstrapCannotDisableCaptcha(t *testing.T) {
-	for _, key := range []string{"LISTEN_ADDR", "START_PORT", "EXTERNAL_URL", "CAP_URL", "CAP_SITE_KEY", "CAP_SECRET"} {
-		t.Setenv(key, "")
-	}
-	t.Setenv("CAP_ENABLED", "disabled")
+func TestInvalidBootstrapPortDoesNotCreateMarker(t *testing.T) {
+	t.Setenv("LISTEN_ADDR", "127.0.0.1")
+	t.Setenv("START_PORT", "99999")
+	t.Setenv("EXTERNAL_URL", "")
 	directory := t.TempDir()
 	state, err := store.Open(directory)
 	if err != nil {
@@ -48,16 +46,10 @@ func TestInvalidCapBootstrapCannotDisableCaptcha(t *testing.T) {
 	}
 	defer state.Close()
 	if err = bootstrap(state, directory); err == nil {
-		t.Fatal("invalid CAPTCHA policy was accepted")
+		t.Fatal("invalid port was accepted")
 	}
-	if state.Config().Security.CapDisabled {
-		t.Fatal("invalid deployment setting weakened CAPTCHA enforcement")
-	}
-	t.Setenv("CAP_ENABLED", "true")
+	t.Setenv("START_PORT", "10492")
 	if err = bootstrap(state, directory); err != nil {
 		t.Fatal(err)
-	}
-	if state.Config().Security.CapDisabled {
-		t.Fatal("corrected bootstrap did not enforce CAPTCHA")
 	}
 }

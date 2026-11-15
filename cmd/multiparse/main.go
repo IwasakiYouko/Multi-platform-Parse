@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,7 +18,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -35,7 +32,7 @@ import (
 	"multiparse/internal/web"
 )
 
-const version = "1.2.2"
+const version = "2.0.0"
 
 func main() {
 	if err := run(); err != nil {
@@ -43,6 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 }
+
 func run() error {
 	command := "serve"
 	args := os.Args[1:]
@@ -64,9 +62,6 @@ func run() error {
 	}
 	if command == "health" {
 		return health(*data)
-	}
-	if command == "cap-run" {
-		return capRun()
 	}
 	absData, err := filepath.Abs(*data)
 	if err != nil {
@@ -94,13 +89,9 @@ func run() error {
 	if err = bootstrap(st, absData); err != nil {
 		return err
 	}
-	keyFile := env("CAP_ADMIN_KEY_FILE", filepath.Join(absData, "cap-admin.key"))
-	if err = ensureSecret(keyFile); err != nil {
-		return err
-	}
 	switch command {
 	case "init":
-		fmt.Printf("初始化完成。初始管理员凭据：%s\nCap管理密钥：%s\n", filepath.Join(absData, "initial-admin.txt"), keyFile)
+		fmt.Printf("初始化完成。初始管理员凭据：%s\n", filepath.Join(absData, "initial-admin.txt"))
 		return nil
 	case "admin-reset":
 		b, e := io.ReadAll(io.LimitReader(os.Stdin, 1025))
@@ -144,8 +135,13 @@ func run() error {
 	defer service.Close()
 	var runtime *appruntime.Server
 	started := time.Now()
+	extractFirst := func(raw string) string {
+		if links := onebot.Extract(model.Event{Segments: []model.Segment{{Type: "text", Data: map[string]any{"text": raw}}}}); len(links) > 0 {
+			return links[0]
+		}
+		return raw
+	}
 	hooks := web.Hooks{
-		CapAdminKeyFile: keyFile,
 		Status: func() any {
 			state := runtime.State()
 			c := st.Config()
@@ -169,7 +165,22 @@ func run() error {
 			}
 			active, queued := service.Counts()
 			pending, cleanupError := service.CleanupStatus()
-			return map[string]any{"version": version, "uptime_seconds": int64(time.Since(started).Seconds()), "listen": state.Listen, "url": state.URL, "onebot_ws_url": ws, "bots": hub.Status(), "cache_entries": len(entries), "cache_bytes": bytes, "active_tasks": active, "queue_size": queued, "pending_cleanup": pending, "cleanup_error": cleanupError, "cap_admin_key_file": keyFile, "data_dir": absData, "cache_dir": absCache}
+			return map[string]any{
+				"version":         version,
+				"uptime_seconds":  int64(time.Since(started).Seconds()),
+				"listen":          state.Listen,
+				"url":             state.URL,
+				"onebot_ws_url":   ws,
+				"bots":            hub.Status(),
+				"cache_entries":   len(entries),
+				"cache_bytes":     bytes,
+				"active_tasks":    active,
+				"queue_size":      queued,
+				"pending_cleanup": pending,
+				"cleanup_error":   cleanupError,
+				"data_dir":        absData,
+				"cache_dir":       absCache,
+			}
 		},
 		PrepareConfig: func(old, new model.Config) (func(), func(), error) { return runtime.Prepare(old.Server, new.Server) },
 		ConfigChanged: func(old, new model.Config) {
@@ -182,9 +193,11 @@ func run() error {
 			}
 			service.Reconfigure(old, new)
 		},
-		ClearCache: service.Cleanup,
-		TestProxy:  func(ctx context.Context, platform string) error { return netx.ProxyTest(ctx, st.Config(), platform) },
-		Submit:     func(ctx context.Context, raw string) (string, error) { return service.Submit(ctx, model.Target{}, raw) },
+		ClearCache:  service.Cleanup,
+		DeleteCache: service.DeleteCacheEntry,
+		TestProxy:   func(ctx context.Context, platform string) error { return netx.ProxyTest(ctx, st.Config(), platform) },
+		Submit:      func(ctx context.Context, raw string) (string, error) { return service.Submit(ctx, model.Target{}, extractFirst(raw)) },
+		Preview:     func(ctx context.Context, raw string) (*model.ParseResult, error) { return service.Preview(ctx, extractFirst(raw)) },
 	}
 	admin, err := web.New(st, hooks)
 	if err != nil {
@@ -193,7 +206,6 @@ func run() error {
 	defer admin.Close()
 	mux := http.NewServeMux()
 	mux.Handle("/api/", admin.Handler())
-	mux.Handle("/captcha/", admin.Handler())
 	mux.Handle("/healthz", admin.Handler())
 	mux.Handle("/onebot/v11/ws", hub.Handler())
 	mux.Handle("/media/", service.MediaHandler())
@@ -221,86 +233,19 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	var capWG sync.WaitGroup
-	if st.Config().Security.CapDisabled {
-		slog.Warn("Cap验证码已关闭；密码登录与失败封禁仍然生效，请限制管理入口")
-	} else {
-		capWG.Add(1)
-		go func() {
-			defer capWG.Done()
-			ticker := time.NewTicker(3 * time.Second)
-			defer ticker.Stop()
-			warned := false
-			for {
-				if st.Config().Security.CapDisabled {
-					return
-				}
-				key, e := os.ReadFile(keyFile)
-				if e == nil {
-					attempt, cancel := context.WithTimeout(ctx, 20*time.Second)
-					e = admin.ProvisionCap(attempt, strings.TrimSpace(string(key)))
-					cancel()
-				}
-				if e == nil {
-					if cfg := st.Config(); !cfg.Security.CapDisabled {
-						slog.Info("Cap已就绪", "level", cfg.Security.CapLevel)
-					}
-					return
-				}
-				if !warned {
-					slog.Warn("Cap尚未就绪，登录保持关闭；检查Cap与Valkey服务以及密钥挂载")
-					warned = true
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-				}
-			}
-		}()
-	}
 	<-ctx.Done()
-	capWG.Wait()
 	shutdown, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	return runtime.Close(shutdown)
 }
+
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
 }
-func ensureSecret(path string) error {
-	if b, e := os.ReadFile(path); e == nil {
-		if len(strings.TrimSpace(string(b))) < 32 {
-			return errors.New("Cap管理密钥文件内容无效")
-		}
-		return nil
-	} else if !errors.Is(e, os.ErrNotExist) {
-		return e
-	}
-	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
-		return e
-	}
-	b := make([]byte, 32)
-	if _, e := rand.Read(b); e != nil {
-		return e
-	}
-	f, e := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if errors.Is(e, os.ErrExist) {
-		return nil
-	}
-	if e != nil {
-		return e
-	}
-	_, e = f.WriteString(hex.EncodeToString(b) + "\n")
-	closeErr := f.Close()
-	if e != nil {
-		return e
-	}
-	return closeErr
-}
+
 func bootstrap(st *store.Store, data string) error {
 	marker := filepath.Join(data, "bootstrap.done")
 	if _, e := os.Stat(marker); e == nil {
@@ -322,22 +267,6 @@ func bootstrap(st *store.Store, data string) error {
 	if v := os.Getenv("EXTERNAL_URL"); v != "" {
 		c.Server.ExternalURL = v
 	}
-	if v := os.Getenv("CAP_ENABLED"); v != "" {
-		enabled, e := strconv.ParseBool(v)
-		if e != nil {
-			return fmt.Errorf("CAP_ENABLED必须为有效布尔值：%w", e)
-		}
-		c.Security.CapDisabled = !enabled
-	}
-	if v := os.Getenv("CAP_URL"); v != "" {
-		c.Security.CapURL = v
-	}
-	if v := os.Getenv("CAP_SITE_KEY"); v != "" {
-		c.Security.CapSiteKey = v
-	}
-	if v := os.Getenv("CAP_SECRET"); v != "" {
-		c.Security.CapSecret = v
-	}
 	if e := c.Validate(); e != nil {
 		return e
 	}
@@ -346,6 +275,7 @@ func bootstrap(st *store.Store, data string) error {
 	}
 	return os.WriteFile(marker, []byte("1\n"), 0600)
 }
+
 func health(data string) error {
 	b, e := os.ReadFile(filepath.Join(data, "runtime.json"))
 	if e != nil {

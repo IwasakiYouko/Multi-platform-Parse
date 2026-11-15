@@ -41,18 +41,64 @@ class RuntimePackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "notices checksum/size"):
                 runtime.copy_deno_notices(changed, root)
 
+    def test_bundled_alpine_deno_notices_and_musl_linking(self):
+        lock = json.loads(runtime.LOCK.read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docs = root / "docs"
+            docs.mkdir()
+            fake_sys_deno = root / "usr-bin-deno"
+            fake_sys_deno.write_bytes(b"\x7fELF\x02\x01fake")
+            target_deno = root / "tools/deno"
+            lic_payload = b"MIT" * 358  # 1074 bytes
+            fake_lock = dict(lock)
+            fake_lock["deno_alpine_license"] = {
+                "url": Response.url,
+                "size": len(lic_payload),
+                "sha256": hashlib.sha256(lic_payload).hexdigest(),
+            }
+            with patch.object(runtime, "extract_elf_audit_crates", return_value={("serde", "1.0.228")}), \
+                 patch.object(runtime.urllib.request, "urlopen", return_value=Response(lic_payload)):
+                resolved = runtime.install_musl_deno(
+                    target_deno, docs, fake_lock, skip_deno=False, system_deno=fake_sys_deno
+                )
+            self.assertEqual(Path(resolved), fake_sys_deno.resolve())
+            self.assertTrue(target_deno.is_symlink())
+            self.assertEqual(target_deno.resolve(), fake_sys_deno.resolve())
+            self.assertTrue((docs / lock["deno_alpine_notices"]["filename"]).is_file())
+            self.assertEqual((docs / "deno.LICENSE").read_bytes(), lic_payload)
+            with tarfile.open(docs / lock["deno_alpine_notices"]["filename"], "r:gz") as bundle:
+                for path in (
+                    "Deno-LICENSE.md",
+                    "PROVENANCE.json",
+                    "native/v8/LICENSE",
+                    "native/rust-1.95.0/LICENSE-MIT",
+                ):
+                    self.assertGreater(bundle.getmember(path).size, 50)
+            with self.assertRaisesRegex(ValueError, "musl requires OS-packaged deno"):
+                runtime.install_musl_deno(target_deno, docs, fake_lock, system_deno=root / "missing-deno")
+
     def test_wheel_selection_requires_one_compatible_variant_per_package(self):
         artifacts = [
-            {"name": "brotli", "python": "3.11"},
-            {"name": "brotli", "python": "3.12"},
+            {"name": "brotli", "python": "3.11", "libc": "glibc"},
+            {"name": "brotli", "python": "3.11", "libc": "musl"},
+            {"name": "brotli", "python": "3.12", "libc": "glibc"},
             {"name": "requests"},
         ]
-        self.assertEqual(runtime.select_wheels(artifacts, "3.11"), [artifacts[0], artifacts[2]])
-        self.assertEqual(runtime.select_wheels(artifacts, "3.12"), [artifacts[1], artifacts[2]])
+        self.assertEqual(runtime.select_wheels(artifacts, "3.11", "glibc"), [artifacts[0], artifacts[3]])
+        self.assertEqual(runtime.select_wheels(artifacts, "3.11", "musl"), [artifacts[1], artifacts[3]])
+        self.assertEqual(runtime.select_wheels(artifacts, "3.12", "glibc"), [artifacts[2], artifacts[3]])
         with self.assertRaisesRegex(ValueError, "no unique locked"):
-            runtime.select_wheels(artifacts, "3.15")
+            runtime.select_wheels(artifacts, "3.12", "musl")
         with self.assertRaisesRegex(ValueError, "no unique locked"):
-            runtime.select_wheels(artifacts + [artifacts[0]], "3.11")
+            runtime.select_wheels(artifacts, "3.15", "glibc")
+        with self.assertRaisesRegex(ValueError, "no unique locked"):
+            runtime.select_wheels(artifacts + [artifacts[0]], "3.11", "glibc")
+        lock = json.loads(runtime.LOCK.read_text())
+        for py in ("3.11", "3.12", "3.13", "3.14"):
+            for libc in ("glibc", "musl"):
+                selected = runtime.select_wheels(lock["wheels"], py, libc)
+                self.assertEqual(len(selected), 11)
 
     def test_download_requires_both_locked_size_and_hash(self):
         payload = b"locked runtime"

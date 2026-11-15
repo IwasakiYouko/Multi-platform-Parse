@@ -1,5 +1,14 @@
 # 变更记录
 
+## 2.0.0
+
+- **平台级消息区块变量与自定义模板引擎**：将解析文案拆分为带前缀的区块变量（`{title}`、`{author}`、`{content}`、`{url}`、`{clean_url}`、`{platform}`、`{type}`、`{media_stats}`）与纯值原子变量（`{raw_title}`、`{raw_author}`、`{raw_content}`、`{raw_url}`、`{raw_clean_url}`、`{raw_platform}`、`{raw_type}`）。支持全局默认消息模板，并允许每个平台独立设置模板模式（跟随全局 / 自定义模板 / 不发送文字）与封面图策略（跟随全局 / 强制显示 / 强制关闭）。
+- **智能空行折叠与文案优化**：当模板某一行引用的所有变量均为空值时自动折叠整行（不残留自定义前缀或多余空行）；当标题与正文完全重复时自动去重正文；新增链接追踪参数清洗开关（自动剔除 `utm_*`、`spm_id_from`、`vd_source`、`share_*`、`igsh` 等分享追踪参数）与群聊引用回复原消息开关（OneBot `reply` 消息段）。
+- **彻底移除 Cap 验证码与附属容器**：移除 Cap widget/WASM 前端资源、`cap-run` 子命令、`/captcha/` 路由、`cap_replays` 数据表、`compose.no-cap.yaml` 及 `-cap` 镜像，部署精简为无需 Valkey 的单容器架构。保留 Argon2id 密码散列、首次随机密码强制修改、HttpOnly 会话、同源与 CSRF 校验及持久化 IP 登录失败封禁，并将前端 `Content-Security-Policy` 收紧为 `script-src 'self'`（移除 `'unsafe-inline'`、`'unsafe-eval'` 与 `'wasm-unsafe-eval'`）。支持从 v1.x 数据卷平滑升级。
+- **控制面板视觉与交互重构**：重构为响应式双栏工作台（支持浅色/深色主题记忆），重整为「运行总览、解析沙盒与队列、平台与模板、OneBot 与会话策略、媒体与出口、缓存与安全」六大模块；新增平台滑出式配置抽屉（内置变量胶囊点击插入与实时聊天气泡预览）、底部未保存变更浮动栏与 `Ctrl+S` 快捷键、非敏感配置免输密码一键保存（仅修改网络监听/安全封禁/代理凭据/TLS 等高危项时弹出密码确认框）。
+- **新增管理端沙盒预览、单条缓存删除与配置导入导出**：新增 `POST /api/parse/preview` 同步解析预览接口（仅拉取结构化元信息与实时渲染预览文案，脱敏剥离请求头与提取凭据，不写缓存且不发 OneBot）、`DELETE /api/cache?key=...` 单条缓存删除接口，以及脱敏配置 JSON 导出与安全导入回填功能。
+- **容器基底迁移至 Alpine Linux（`alpine:3.24`）**：构建阶段切换至 `golang:1.27.3-alpine`，运行阶段切换至 `alpine:3.24`，为锁定的 yt-dlp Python 运行时补充 `musllinux_1_2_x86_64` 原生 wheel 校验并复用系统 `deno`，大幅缩减单容器镜像体积并实现纯离线镜像归档加载部署。
+
 ## 1.2.2
 
 - 校验 HTTP 媒体下载 `Content-Length` 完整性，拦截 CDN 边缘节点提前断开导致的残缺流，避免进入 FFmpeg 全片转码后快速报错。

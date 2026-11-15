@@ -93,8 +93,9 @@ func TestEncryptedConfigSessionsAndTTL(t *testing.T) {
 	}
 }
 
-func TestBanReplayAndPersistentLimit(t *testing.T) {
-	s, err := Open(t.TempDir())
+func TestBanAndPersistentLimit(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,16 +112,49 @@ func TestBanReplayAndPersistentLimit(t *testing.T) {
 	if err = s.Unban(b.IP); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.ConsumeCapToken("one-use-only"); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.ConsumeCapToken("one-use-only"); err == nil {
-		t.Fatal("replayed captcha accepted")
-	}
 	for i := range 2 {
 		ok, err := s.AllowRequest("bucket", 1, time.Minute)
 		if err != nil || ok != (i == 0) {
 			t.Fatalf("request %d allowed=%v err=%v", i, ok, err)
 		}
+	}
+}
+
+func TestLegacyConfigUpgradeDropsCapReplays(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate v1.x database with cap_replays table and legacy cap_* JSON fields.
+	if _, err = s.DB().Exec(`CREATE TABLE cap_replays(hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	legacyJSON := []byte(`{"server":{"listen":"::","port":10492},"onebot":{"token":"123456789012345678901234567890"},"security":{"cap_disabled":false,"cap_url":"http://127.0.0.1:3000","cap_site_key":"site","cap_secret":"sec","cap_level":4,"failures":5,"window_minutes":15,"ban_minutes":60,"session_hours":12},"proxy":{"mode":"direct"},"media":{"max_bytes":83886080,"max_duration_seconds":1500,"max_images":30,"quality":720,"concurrency":2,"transcode_concurrency":1,"max_disk_bytes":2147483648,"auto_download":true,"show_cover":true,"show_info":true,"oversize_mode":"link","transport":"file"},"cache":{"ttl_hours":24},"policy":{"enabled":true,"private_enabled":true,"cooldown_seconds":30}}`)
+	enc, err := s.encrypt(legacyJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB().Exec(`UPDATE settings SET payload=? WHERE id=1`, enc); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	cfg := upgraded.Config()
+	if !cfg.Media.CleanURL || !cfg.Policy.GroupReply || cfg.Media.MessageTemplate != model.DefaultMessageTemplate {
+		t.Fatalf("upgraded defaults missing: clean_url=%v group_reply=%v template=%q", cfg.Media.CleanURL, cfg.Policy.GroupReply, cfg.Media.MessageTemplate)
+	}
+	if cfg.Platforms["bilibili"].TemplateMode != "inherit" || cfg.Platforms["bilibili"].CoverMode != "inherit" {
+		t.Fatalf("upgraded platform policy not normalized: %+v", cfg.Platforms["bilibili"])
+	}
+	var tableCount int
+	if err = upgraded.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cap_replays'`).Scan(&tableCount); err != nil || tableCount != 0 {
+		t.Fatalf("cap_replays table not dropped: count=%d err=%v", tableCount, err)
 	}
 }
