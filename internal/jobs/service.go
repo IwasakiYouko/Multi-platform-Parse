@@ -1156,7 +1156,46 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 		return s.sender.UploadFile(ctx, target, location, filepath.Base(up.path))
 	}
 
-	// Message 2: Single media direct (preserving sequence with uploads) OR Multi-media merged forward.
+	nickname := forwardNickname(r)
+	textChunks := policy.ForwardTextChunks(cfg, r)
+	buildNodes := func(items []deliverMediaItem, includeFullText bool) []model.ForwardNode {
+		var nodes []model.ForwardNode
+		if includeFullText {
+			for _, chunk := range textChunks {
+				nodes = append(nodes, model.ForwardNode{
+					UserID:   target.BotID,
+					Nickname: nickname,
+					Content:  []model.Segment{{Type: "text", Data: map[string]any{"text": chunk}}},
+				})
+			}
+		}
+		for _, item := range items {
+			nodes = append(nodes, model.ForwardNode{
+				UserID:   target.BotID,
+				Nickname: nickname,
+				Content:  []model.Segment{s.buildMediaSegment(e, item, target)},
+			})
+		}
+		return nodes
+	}
+	sendForwardBatched := func(nodes []model.ForwardNode) error {
+		const maxBatch = 200
+		for start := 0; start < len(nodes); start += maxBatch {
+			if start > 0 {
+				if err := check(); err != nil {
+					return err
+				}
+			}
+			end := min(start+maxBatch, len(nodes))
+			if err := s.sender.SendForward(ctx, target, nodes[start:end]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Message 2: Single media direct (preserving sequence with uploads) + optional full-text forward reader,
+	// OR Multi-media merged forward.
 	if len(mediaItems) <= 1 || !cfg.Media.ForwardEnabled {
 		mIdx, uIdx := 0, 0
 		for mIdx < len(mediaItems) || uIdx < len(uploads) {
@@ -1170,6 +1209,14 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 					return err
 				}
 				uIdx++
+			}
+		}
+		if cfg.Media.ForwardEnabled && len(textChunks) > 0 {
+			if err := check(); err != nil {
+				return err
+			}
+			if err := sendForwardBatched(buildNodes(nil, true)); err != nil {
+				return fmt.Errorf("发送长文合并转发失败: %w", err)
 			}
 		}
 		return nil
@@ -1205,45 +1252,16 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 					uIdx++
 				}
 			}
-			return nil
-		}
-	}
-
-	nickname := forwardNickname(r)
-	buildNodes := func(items []deliverMediaItem, includeFullText bool) []model.ForwardNode {
-		var nodes []model.ForwardNode
-		if includeFullText {
-			if fullText, truncated := policy.FullTextForForward(cfg, r); truncated && fullText != "" {
-				nodes = append(nodes, model.ForwardNode{
-					UserID:   target.BotID,
-					Nickname: nickname,
-					Content:  []model.Segment{{Type: "text", Data: map[string]any{"text": fullText}}},
-				})
-			}
-		}
-		for _, item := range items {
-			nodes = append(nodes, model.ForwardNode{
-				UserID:   target.BotID,
-				Nickname: nickname,
-				Content:  []model.Segment{s.buildMediaSegment(e, item, target)},
-			})
-		}
-		return nodes
-	}
-	sendForwardBatched := func(nodes []model.ForwardNode) error {
-		const maxBatch = 200
-		for start := 0; start < len(nodes); start += maxBatch {
-			if start > 0 {
+			if len(textChunks) > 0 {
 				if err := check(); err != nil {
 					return err
 				}
+				if err := sendForwardBatched(buildNodes(nil, true)); err != nil {
+					return fmt.Errorf("发送长文合并转发失败: %w", err)
+				}
 			}
-			end := min(start+maxBatch, len(nodes))
-			if err := s.sender.SendForward(ctx, target, nodes[start:end]); err != nil {
-				return err
-			}
+			return nil
 		}
-		return nil
 	}
 
 	forwardErr := sendForwardBatched(buildNodes(mediaItems, true))

@@ -1,5 +1,20 @@
 # 变更记录
 
+## 2.2.0
+
+- **24 平台零追踪标准直链深度净化**：
+  - **小红书默认 100% 零参数直链**：默认剥离 `xsec_source` 与 `xsec_token`，统一输出 `https://www.xiaohongshu.com/explore/{id}`（兼容 `/user/profile/{uid}/{id}` 路径归一，同时保留解析器内部上游请求的 `xsec_token` 确保匿名解析零风控）；后台新增可选开关 `xhs_keep_token`（默认关闭，开启时仅保留 `xsec_token` 供桌面网页免登录直开，仍强制剔除 `xsec_source`）。
+  - **小黑盒 API 分享外壳解包**：将 `https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?link_id={id}` 与移动端域名统一重写为 `https://www.xiaoheihe.cn/app/bbs/link/{id}`。
+  - **全平台域名与路由归一**：覆盖微信视频号（`channels.weixin.qq.com` / `exportkey` → `https://weixin.qq.com/sph/{id}`）、知乎（解析 `zhihu.link` 短链重定向、`/appview/p/{id}` → `https://zhuanlan.zhihu.com/p/{id}`）、百度贴吧（剔除 `see_lz=0` 与 `pn=1`）、微博（`video.weibo.com/show?fid=...` → `weibo.com/tv/show/...` 及标准博文直链）、豆瓣（解包 `/doubanapp/dispatch?uri=...`）、酷安（`coolapk1s.com` 归一）、今日头条、抖音、TikTok、B 站（剔除 `t=0` / `start_progress`，动态归一 `/opus/{id}`）、YouTube（`youtu.be` 归一并剔除 `&list=RD...` 电台追踪）等全部 24 个注册平台，并同步清洗 `{content}` 正文内嵌链接与扩充 30+ 追踪参数黑名单。
+- **媒体处理画质与吞吐全面升级**：
+  - **默认视频画质升级至 `1080p`**：`CurrentConfigSchema` 升级至 `3`（旧版未改动默认 `720p` 自动平滑迁移至 `1080p`），符合规范的 1080p H.264 (`yuv420p`) 原画流直接 `-c:v copy` 毫秒级无损直传，免除 720p 重编码画质折损与 CPU 开销。
+  - **纯 Go 原生 WebP 解码与超长截图无损保真**：引入 `golang.org/x/image/webp` 原生解码静态 WebP（并支持动图 WebP `ANMF` 首帧提取），在 50MP 安全边界内支持最高 `16384px` 超长截图/条漫无损直出（修复原 FFmpeg `4096px` 缩放导致的文字模糊，且不再占用 `TranscodeConcurrency` 视频转码槽位）。
+  - **多平台流优选与容灾增强**：皮皮虾优先提取无水印 `origin_video_download` / `video_high`；B 站自动降权 `*.mcdn.bilivideo.*` / `*.szbdyd.com` 慢速 PCDN 节点并新增 `AudioBackupURLs` 音轨多源容灾回退；兜底视频抽帧自动跳过片头黑场（`0.8s–1.0s` 智能寻帧 + `0s` 回退）并提升至 `1280px` 高清封面。
+- **产品体验与模板能力迭代**：
+  - **超长单图/无图文章自动合并转发全文阅读**：正文超出摘要字数上限（`SummaryLength`）的单图或纯文本长文自动补发「消息 2 · 长文合并转发阅读卡」，按自然段落智能切分阅读节点（单节点 `<= 1500` 字符）。
+  - **新增时长变量与全平台标签/作者补全**：新增 `{duration}` / `{raw_duration}` 模板变量；补全小黑盒、知乎、快手、贴吧、最右、Medium 原生 `{tags}` 话题提取及贴吧、皮皮虾、Medium `{author}` 作者提取；支持 B 站图文动态与微博 `MixMediaInfo` 实况图（`livephoto`）配对；自动剔除标题与正文中的零宽不可见字符并折叠多余空行。
+- **管理控制台视觉与诊断升级（v2.2.0）**：沙盒新增「原始链接 → 纯净直链」剥离参数可视化对比器与媒体流明细胶囊；升级高保真 QQ NT 聊天气泡与可点击展开的合并转发内部节点预览器；补齐 24 平台品牌色徽标、缓存配额三色预警进度条、任务耗时与状态计数、任务/缓存一键沙盒重放及全表单密码显隐切换。
+
 ## 2.1.0
 
 - **小红书视频与图片平台无损直出**：优先读取 `originVideoKey` 直连 `sns-video-bd.xhscdn.com` 无水印原始上传流（多节点容灾回退，无源片时优选最高分辨率流），图片与封面切换至 `ci.xiaohongshu.com/{key}?imageView2/2/w/format/png` 无水印原图管道并支持最高 50MP 相机直出画幅；所有原生平台视频优先采用官方无水印高清封面替代首帧截图。

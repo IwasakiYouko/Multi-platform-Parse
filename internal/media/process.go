@@ -490,7 +490,7 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 		if err != nil {
 			return empty, err
 		}
-	} else if bytes.HasPrefix(sniff, []byte("\xff\xd8\xff")) || bytes.HasPrefix(sniff, []byte("\x89PNG\r\n\x1a\n")) || bytes.HasPrefix(sniff, []byte("GIF87a")) || bytes.HasPrefix(sniff, []byte("GIF89a")) {
+	} else if bytes.HasPrefix(sniff, []byte("\xff\xd8\xff")) || bytes.HasPrefix(sniff, []byte("\x89PNG\r\n\x1a\n")) || bytes.HasPrefix(sniff, []byte("GIF87a")) || bytes.HasPrefix(sniff, []byte("GIF89a")) || isRIFFWebP(sniff) {
 		if item.AudioURL != "" {
 			return empty, errors.New("图片不能合并音频")
 		}
@@ -532,31 +532,62 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 		if video == nil {
 			return empty, errors.New("音频合并缺少视频流")
 		}
-		var finalAudio string
-		audioInput, finalAudio, err = p.download(ctx, item.AudioURL, headers, p.hardLimit(), ".bin")
-		if err != nil {
-			return empty, err
+		audioURLs := append([]string{item.AudioURL}, item.AudioBackupURLs...)
+		if len(audioURLs) > 9 {
+			audioURLs = audioURLs[:9]
 		}
-		af, openErr := os.Open(audioInput)
-		if openErr != nil {
-			return empty, openErr
-		}
-		prefix := make([]byte, 16)
-		count, _ := af.Read(prefix)
-		af.Close()
-		if bytes.HasPrefix(bytes.TrimSpace(prefix[:count]), []byte("#EXTM3U")) {
-			audioInput, err = p.localizeHLS(ctx, audioInput, finalAudio, headers, 0)
-			if err != nil {
-				return empty, err
+		var lastAudioErr error
+		audioOK := false
+		for _, audioCandidate := range audioURLs {
+			beforeSeq, beforeHLS, beforeBytes := p.sequence, p.hlsResources, p.bytes
+			var savedHLSCache map[string]hlsCached
+			if len(p.hlsCache) > 0 {
+				savedHLSCache = make(map[string]hlsCached, len(p.hlsCache))
+				for k, v := range p.hlsCache {
+					savedHLSCache[k] = v
+				}
 			}
+			candInput, finalAudio, dlErr := p.download(ctx, audioCandidate, headers, p.hardLimit(), ".bin")
+			if dlErr == nil {
+				af, openErr := os.Open(candInput)
+				if openErr != nil {
+					dlErr = openErr
+				} else {
+					prefix := make([]byte, 16)
+					count, _ := af.Read(prefix)
+					af.Close()
+					if bytes.HasPrefix(bytes.TrimSpace(prefix[:count]), []byte("#EXTM3U")) {
+						candInput, dlErr = p.localizeHLS(ctx, candInput, finalAudio, headers, 0)
+					}
+				}
+			}
+			var candInfo probeResult
+			if dlErr == nil {
+				candInfo, dlErr = p.probe(ctx, candInput)
+			}
+			if dlErr == nil && candInfo.audio() == nil {
+				dlErr = errors.New("独立音频地址不含音频流")
+			}
+			if dlErr == nil {
+				audioInput = candInput
+				audioInfo = candInfo
+				audio = candInfo.audio()
+				audioOK = true
+				break
+			}
+			if cleanupErr := p.rollbackAttempt(beforeSeq, beforeHLS, beforeBytes, savedHLSCache); cleanupErr != nil {
+				return empty, errors.Join(dlErr, cleanupErr)
+			}
+			if ctx.Err() != nil {
+				return empty, ctx.Err()
+			}
+			if !IsRetryable(dlErr) {
+				return empty, dlErr
+			}
+			lastAudioErr = dlErr
 		}
-		audioInfo, err = p.probe(ctx, audioInput)
-		if err != nil {
-			return empty, err
-		}
-		audio = audioInfo.audio()
-		if audio == nil {
-			return empty, errors.New("独立音频地址不含音频流")
+		if !audioOK {
+			return empty, lastAudioErr
 		}
 	}
 	duration, err := info.duration()
@@ -571,7 +602,7 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 	}
 	quality := p.cfg.Media.Quality
 	if quality < 1 {
-		quality = 720
+		quality = 1080
 	}
 	if quality > 4320 {
 		quality = 4320
@@ -702,8 +733,23 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 				}
 			}
 		} else {
-			thumbArgs := append(inputOptions(output), "-i", output, "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=w=640:h=640:force_original_aspect_ratio=decrease", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe")
-			thumbnail, err = p.ffmpeg(ctx, thumbArgs, ".jpg", 4<<20)
+			buildThumbArgs := func(seek string) []string {
+				args := append([]string{}, inputOptions(output)...)
+				if seek != "" {
+					args = append(args, "-ss", seek)
+				}
+				args = append(args, "-i", output, "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=w=1280:h=1280:force_original_aspect_ratio=decrease", "-c:v", "mjpeg", "-q:v", "3", "-f", "image2pipe")
+				return args
+			}
+			if duration >= 1.2 {
+				seekSec := min(1.0, duration*0.15)
+				thumbnail, err = p.ffmpeg(ctx, buildThumbArgs(strconv.FormatFloat(seekSec, 'f', 2, 64)), ".jpg", 4<<20)
+				if err != nil && ctx.Err() == nil {
+					thumbnail, err = p.ffmpeg(ctx, buildThumbArgs(""), ".jpg", 4<<20)
+				}
+			} else {
+				thumbnail, err = p.ffmpeg(ctx, buildThumbArgs(""), ".jpg", 4<<20)
+			}
 			if err != nil {
 				return empty, fmt.Errorf("生成视频封面失败: %w", err)
 			}

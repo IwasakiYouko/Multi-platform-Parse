@@ -82,6 +82,16 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 	if id == "" {
 		return nil, fmt.Errorf("抖音链接没有有效作品 ID")
 	}
+	ensureCanonical := func(r *model.ParseResult) *model.ParseResult {
+		if r != nil && r.CanonicalURL == "" && id != "" {
+			if r.Type == "image" {
+				r.CanonicalURL = "https://www.douyin.com/note/" + id
+			} else {
+				r.CanonicalURL = "https://www.douyin.com/video/" + id
+			}
+		}
+		return r
+	}
 	if requestErr == nil {
 		if detail := majorDouyinState(page, id); detail != nil {
 			r, e := majorDouyinDetail(detail)
@@ -89,7 +99,7 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 				return nil, e
 			}
 			r.SourceURL = source
-			return r, nil
+			return ensureCanonical(r), nil
 		}
 	}
 	// The mobile share endpoint exposes videoInfoRes even when the desktop route is a JS shell.
@@ -103,7 +113,7 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 				return nil, e
 			}
 			r.SourceURL = source
-			return r, nil
+			return ensureCanonical(r), nil
 		}
 	}
 	var webErr error
@@ -111,7 +121,7 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 	if hasCookie {
 		if r, err := majorDouyinWeb(ctx, c, id, cookie); err == nil {
 			r.SourceURL = source
-			return r, nil
+			return ensureCanonical(r), nil
 		} else {
 			webErr = err
 		}
@@ -121,12 +131,12 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 		if hasCookie && webErr != nil && isCookieAuthError(webErr.Error()) {
 			r.CookieExpired = true
 		}
-		return r, nil
+		return ensureCanonical(r), nil
 	} else {
 		if webErr == nil {
 			if r, wErr := majorDouyinWeb(ctx, c, id, cookie); wErr == nil {
 				r.SourceURL = source
-				return r, nil
+				return ensureCanonical(r), nil
 			} else {
 				webErr = wErr
 			}

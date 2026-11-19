@@ -229,7 +229,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 			for _, f := range e.Files {
 				size += f.Size + f.VideoSize
 			}
-			out = append(out, map[string]any{"key": e.Key, "platform": e.Platform, "url": e.URL, "title": e.Result.Title, "author": e.Result.Author, "type": e.Result.Type, "size": size, "bytes": size, "file_count": len(e.Files), "created_at": e.CreatedAt, "expires_at": e.ExpiresAt})
+			out = append(out, map[string]any{"key": e.Key, "platform": e.Platform, "url": e.URL, "clean_url": policy.CleanTrackingURL(policy.EffectiveSourceURL(e.Result)), "title": e.Result.Title, "author": e.Result.Author, "type": e.Result.Type, "size": size, "bytes": size, "file_count": len(e.Files), "created_at": e.CreatedAt, "expires_at": e.ExpiresAt})
 		}
 		reply(w, 200, out)
 		return
@@ -383,6 +383,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 				videos++
 			}
 		}
+		textChunks := policy.ForwardTextChunks(cfg, *res)
 		msg2Mode := "none"
 		showCover := false
 		if cfg.Media.AutoDownload {
@@ -397,17 +398,21 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 				}
 			}
 		}
-		_, fullInForward := policy.FullTextForForward(cfg, *res)
+		if msg2Mode == "none" && cfg.Media.ForwardEnabled && len(textChunks) > 0 {
+			msg2Mode = "text_forward"
+		}
 		reply(w, 200, map[string]any{
-			"result":             sanitizePreviewResult(*res),
-			"rendered":           rendered,
-			"clean_url":          policy.CleanTrackingURL(policy.EffectiveSourceURL(*res)),
-			"effective_template": effectiveTemplate,
-			"show_cover":         showCover,
-			"media_count":        len(res.Media),
-			"visual_items":       visualItems,
-			"message2_mode":      msg2Mode,
-			"full_text_forward":  fullInForward && msg2Mode == "merged_forward",
+			"result":              sanitizePreviewResult(*res),
+			"rendered":            rendered,
+			"clean_url":           policy.CleanTrackingURL(policy.EffectiveSourceURL(*res)),
+			"display_url":         policy.DisplayResultURL(cfg, *res),
+			"effective_template":  effectiveTemplate,
+			"show_cover":          showCover,
+			"media_count":         len(res.Media),
+			"visual_items":        visualItems,
+			"message2_mode":       msg2Mode,
+			"full_text_forward":   len(textChunks) > 0 && (msg2Mode == "merged_forward" || msg2Mode == "text_forward"),
+			"forward_text_chunks": textChunks,
 		})
 		return
 	case path == "/api/platforms" && method == "GET":

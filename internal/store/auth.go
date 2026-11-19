@@ -335,6 +335,7 @@ func (s *Store) ListBans() ([]Ban, error) {
 	}
 	return out, rows.Err()
 }
+
 // AllowRequest uses persistent bounded fixed windows; storage errors reject requests.
 func (s *Store) AllowRequest(bucket string, max int, window time.Duration) (bool, error) {
 	bucket = digest(bucket)

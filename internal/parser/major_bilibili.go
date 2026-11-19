@@ -251,12 +251,10 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 		if video == nil {
 			return nil, fmt.Errorf("哔哩哔哩 DASH 没有可用视频轨道，可能需要登录或大会员")
 		}
-		base.URL = majorURL(video)
-		base.BackupURLs = majorURLs(video["backupUrl"])
-		if len(base.BackupURLs) == 0 {
-			base.BackupURLs = majorURLs(video["backup_url"])
+		base.URL, base.BackupURLs = majorBiliSelectStreamURLs(video)
+		if audio != nil {
+			base.AudioURL, base.AudioBackupURLs = majorBiliSelectStreamURLs(audio)
 		}
-		base.AudioURL = majorURL(audio)
 		base.Width = int(Number(video["width"]))
 		base.Height = int(Number(video["height"]))
 		base.Duration = Number(dash["duration"])
@@ -367,6 +365,61 @@ func majorBiliWBI(ctx context.Context, c *http.Client, playQuery url.Values, coo
 	play, err := majorBiliAPI(ctx, c, "https://api.bilibili.com/x/player/wbi/playurl?"+signedQuery, cookie, referer)
 	return play, expired, err
 }
+func isBiliPCDNHost(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return strings.Contains(host, ".mcdn.bilivideo.") || strings.HasSuffix(host, ".szbdyd.com") || host == "szbdyd.com"
+}
+
+func majorBiliSelectStreamURLs(track map[string]any) (string, []string) {
+	if len(track) == 0 {
+		return "", nil
+	}
+	var all []string
+	seen := map[string]bool{}
+	add := func(u string) {
+		if u != "" && !seen[u] {
+			seen[u] = true
+			all = append(all, u)
+		}
+	}
+	add(majorURL(track))
+	for _, b := range majorURLs(track["backupUrl"]) {
+		add(b)
+	}
+	for _, b := range majorURLs(track["backup_url"]) {
+		add(b)
+	}
+	if len(all) == 0 {
+		return "", nil
+	}
+	// Deprioritize flaky residential PCDN (*.mcdn.bilivideo.*, *.szbdyd.com) when official mirror CDNs exist.
+	if isBiliPCDNHost(all[0]) && len(all) > 1 {
+		var official, pcdn []string
+		for _, u := range all {
+			if isBiliPCDNHost(u) {
+				pcdn = append(pcdn, u)
+			} else {
+				official = append(official, u)
+			}
+		}
+		if len(official) > 0 {
+			reordered := append(official, pcdn...)
+			if len(reordered) > 9 {
+				reordered = reordered[:9]
+			}
+			return reordered[0], reordered[1:]
+		}
+	}
+	if len(all) > 9 {
+		all = all[:9]
+	}
+	return all[0], all[1:]
+}
+
 func majorBiliTrack(tracks []any, video bool) map[string]any {
 	var best map[string]any
 	bestScore := -1.0
@@ -426,9 +479,10 @@ func majorBiliDynamic(ctx context.Context, c *http.Client, id, raw, cookie strin
 		if majorURL(image) == "" {
 			continue
 		}
-		r.Media = append(r.Media, model.Media{Kind: "image", URL: majorURL(image), Width: int(Number(pic["width"])), Height: int(Number(pic["height"])), Headers: r.Headers})
 		if live := majorURL(pic["live_url"]); live != "" {
-			r.Media = append(r.Media, model.Media{Kind: "video", URL: live, ThumbnailURL: majorURL(image), Headers: r.Headers})
+			r.Media = append(r.Media, model.Media{Kind: "livephoto", URL: majorURL(image), VideoURL: live, ThumbnailURL: majorURL(image), Width: int(Number(pic["width"])), Height: int(Number(pic["height"])), Headers: r.Headers})
+		} else {
+			r.Media = append(r.Media, model.Media{Kind: "image", URL: majorURL(image), Width: int(Number(pic["width"])), Height: int(Number(pic["height"])), Headers: r.Headers})
 		}
 	}
 	if archive := Obj(major["archive"]); len(archive) > 0 {

@@ -225,7 +225,7 @@ func (p *preparation) localizeHLS(ctx context.Context, path, base string, header
 		}
 		quality := p.cfg.Media.Quality
 		if quality < 1 {
-			quality = 720
+			quality = 1080
 		}
 		chosen := -1
 		for i, v := range variants {

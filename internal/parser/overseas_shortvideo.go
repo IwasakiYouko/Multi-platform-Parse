@@ -25,11 +25,11 @@ func tikTokItemID(raw string) string {
 	if err != nil {
 		return ""
 	}
-	// Only video/photo routes identify posts; profiles and embed pages do not.
+	// Only video/photo/v routes identify posts; profiles and embed pages do not.
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	for i, part := range parts {
-		if (part == "video" || part == "photo") && i+1 < len(parts) {
-			id := parts[i+1]
+		if (part == "video" || part == "photo" || part == "v") && i+1 < len(parts) {
+			id := strings.TrimSuffix(parts[i+1], ".html")
 			if id == "" {
 				return ""
 			}
@@ -321,8 +321,23 @@ func overseasTikTok(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	if got := overseasFirst(item["aweme_id"], item["id"]); got != "" && got != id {
 		return nil, fmt.Errorf("tiktok: returned post ID does not match")
 	}
-	r := &model.ParseResult{Platform: "tiktok", SourceURL: final, Title: Text(item["desc"]), Content: Text(item["desc"]), Author: overseasFirst(Path(item, "author", "nickname"), Path(item, "author", "uniqueId"))}
+	uniqueID := strings.TrimSpace(Text(Path(item, "author", "uniqueId")))
+	if uniqueID == "" {
+		uniqueID = "_"
+	}
 	photos := Obj(tikTokValue(item, "image_post_info", "imagePost"))
+	routeKind := "video"
+	if len(photos) > 0 {
+		routeKind = "photo"
+	}
+	r := &model.ParseResult{
+		Platform:     "tiktok",
+		SourceURL:    final,
+		CanonicalURL: "https://www.tiktok.com/@" + uniqueID + "/" + routeKind + "/" + id,
+		Title:        Text(item["desc"]),
+		Content:      Text(item["desc"]),
+		Author:       overseasFirst(Path(item, "author", "nickname"), Path(item, "author", "uniqueId")),
+	}
 	if len(photos) > 0 {
 		for _, entry := range Array(photos["images"]) {
 			photo := Obj(entry)

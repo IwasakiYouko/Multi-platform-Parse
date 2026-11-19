@@ -32,7 +32,7 @@ import (
 	"multiparse/internal/web"
 )
 
-const version = "2.1.0"
+const version = "2.2.0"
 
 func main() {
 	if err := run(); err != nil {
@@ -197,8 +197,12 @@ func run() error {
 		ClearCache:  service.Cleanup,
 		DeleteCache: service.DeleteCacheEntry,
 		TestProxy:   func(ctx context.Context, platform string) error { return netx.ProxyTest(ctx, st.Config(), platform) },
-		Submit:      func(ctx context.Context, raw string) (string, error) { return service.Submit(ctx, model.Target{}, extractFirst(raw)) },
-		Preview:     func(ctx context.Context, raw string) (*model.ParseResult, error) { return service.Preview(ctx, extractFirst(raw)) },
+		Submit: func(ctx context.Context, raw string) (string, error) {
+			return service.Submit(ctx, model.Target{}, extractFirst(raw))
+		},
+		Preview: func(ctx context.Context, raw string) (*model.ParseResult, error) {
+			return service.Preview(ctx, extractFirst(raw))
+		},
 	}
 	admin, err := web.New(st, hooks)
 	if err != nil {

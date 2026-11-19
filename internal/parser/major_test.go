@@ -497,3 +497,20 @@ func TestMajorDouyinDetailPreservesImageBackupURLs(t *testing.T) {
 		t.Fatalf("live photo video BackupURLs lost: %#v", r.Media[2])
 	}
 }
+
+func TestMajorBiliSelectStreamURLsDeprioritizesPCDN(t *testing.T) {
+	item := map[string]any{
+		"baseUrl": "https://xy123.mcdn.bilivideo.cn:8082/v1/resource/pcdn-primary.m4s",
+		"backupUrl": []any{
+			"https://xy999.szbdyd.com/pcdn-secondary.m4s",
+			"https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/cdn-official.m4s",
+		},
+	}
+	primary, backups := majorBiliSelectStreamURLs(item)
+	if primary != "https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/cdn-official.m4s" {
+		t.Fatalf("expected official upos CDN promoted ahead of PCDN, got %q", primary)
+	}
+	if len(backups) != 2 || backups[0] != "https://xy123.mcdn.bilivideo.cn:8082/v1/resource/pcdn-primary.m4s" {
+		t.Fatalf("unexpected PCDN backup ordering: %#v", backups)
+	}
+}
