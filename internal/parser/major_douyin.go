@@ -107,7 +107,8 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 		}
 	}
 	var webErr error
-	if strings.TrimSpace(cookie) != "" {
+	hasCookie := strings.TrimSpace(cookie) != ""
+	if hasCookie {
 		if r, err := majorDouyinWeb(ctx, c, id, cookie); err == nil {
 			r.SourceURL = source
 			return r, nil
@@ -117,6 +118,9 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 	}
 	if r, err := majorDouyinMobile(ctx, c, id); err == nil {
 		r.SourceURL = source
+		if hasCookie && webErr != nil {
+			r.CookieExpired = true
+		}
 		return r, nil
 	} else {
 		if webErr == nil {
@@ -695,7 +699,17 @@ func majorDouyinVideo(video map[string]any, headers map[string]string) (model.Me
 
 // majorDouyinDetail converts an aweme_detail object into a ParseResult.
 func majorDouyinDetail(detail map[string]any) (*model.ParseResult, error) {
-	r := &model.ParseResult{Platform: "douyin", Title: Text(detail["desc"]), Content: Text(detail["desc"]), Author: Text(Path(detail, "author", "nickname")), Headers: majorMediaHeaders("https://www.douyin.com/")}
+	var tags []string
+	seenTags := map[string]bool{}
+	for _, item := range Array(detail["text_extra"]) {
+		name := strings.TrimSpace(Text(Obj(item)["hashtag_name"]))
+		if name != "" && !seenTags[strings.ToLower(name)] {
+			seenTags[strings.ToLower(name)] = true
+			tags = append(tags, name)
+		}
+	}
+	id := majorFirstText(detail["aweme_id"], detail["awemeId"])
+	r := &model.ParseResult{Platform: "douyin", Tags: tags, Title: Text(detail["desc"]), Content: Text(detail["desc"]), Author: Text(Path(detail, "author", "nickname")), Headers: majorMediaHeaders("https://www.douyin.com/")}
 	images := Array(detail["images"])
 	if len(images) == 0 {
 		images = Array(Path(detail, "image_post_info", "images"))
@@ -756,5 +770,12 @@ func majorDouyinDetail(detail map[string]any) (*model.ParseResult, error) {
 		return nil, fmt.Errorf("抖音作品没有可下载媒体")
 	}
 	majorResultType(r)
+	if id != "" {
+		if len(images) > 0 {
+			r.CanonicalURL = "https://www.douyin.com/note/" + id
+		} else {
+			r.CanonicalURL = "https://www.douyin.com/video/" + id
+		}
+	}
 	return r, nil
 }

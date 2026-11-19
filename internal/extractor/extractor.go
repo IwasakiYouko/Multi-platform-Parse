@@ -170,7 +170,20 @@ func result(platform, raw string, data json.RawMessage) (*model.ParseResult, err
 	if !direct(mediaURL) {
 		return nil, errors.New("yt-dlp: no HTTP media format")
 	}
-	r := &model.ParseResult{Platform: platform, SourceURL: raw, Title: text("title"), Content: text("description"), Author: text("uploader"), Type: "video", Extraction: &model.Extraction{Engine: Engine, InfoJSON: data}}
+	var tags []string
+	var rawTags []string
+	if json.Unmarshal(info["tags"], &rawTags) == nil {
+		for _, t := range rawTags {
+			if s := strings.TrimSpace(t); s != "" && len(tags) < 20 {
+				tags = append(tags, s)
+			}
+		}
+	}
+	canonical := text("webpage_url")
+	if !httpURL(canonical) {
+		canonical = raw
+	}
+	r := &model.ParseResult{Platform: platform, SourceURL: raw, CanonicalURL: canonical, CoverURL: text("thumbnail"), Tags: tags, Title: text("title"), Content: text("description"), Author: text("uploader"), Type: "video", Extraction: &model.Extraction{Engine: Engine, InfoJSON: data}}
 	r.Media = []model.Media{{Kind: "video", URL: mediaURL, ThumbnailURL: text("thumbnail"), Width: width, Height: height, Duration: duration, Ext: text("ext")}}
 	return r, nil
 }

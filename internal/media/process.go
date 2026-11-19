@@ -439,6 +439,18 @@ func (p *preparation) prepareItem(ctx context.Context, item model.Media, headers
 		if err == nil {
 			artifact, err = p.prepareDownloaded(ctx, item, input, finalURL, headers, true)
 		}
+		if err == nil && artifact.Kind == "video" && item.ThumbnailURL != "" && artifact.ThumbPath != "" {
+			cover, coverErr := p.optionalExtractionCover(ctx, item.ThumbnailURL, headers)
+			if coverErr != nil {
+				err = coverErr
+			} else if cover.Path != "" {
+				if discardErr := p.discard(artifact.ThumbPath); discardErr != nil {
+					err = discardErr
+				} else {
+					artifact.ThumbPath = cover.Path
+				}
+			}
+		}
 		if err == nil {
 			return artifact, nil
 		}

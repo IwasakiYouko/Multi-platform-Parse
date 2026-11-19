@@ -60,7 +60,7 @@ func TestMajorBilibiliPageSelectionAndDASH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requestedCID != "22" || len(r.Media) != 1 || r.Media[0].AudioURL != "https://cdn.bilivideo.com/audio.m4s" || r.Title != "Multipart - Second" {
+	if requestedCID != "22" || len(r.Media) != 1 || r.Media[0].AudioURL != "https://cdn.bilivideo.com/audio.m4s" || r.Title != "Multipart · P2 Second (2/2)" {
 		t.Fatalf("wrong multipart DASH result: %#v cid=%s", r, requestedCID)
 	}
 	if r.Media[0].Headers["Cookie"] != "" {

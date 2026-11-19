@@ -178,11 +178,11 @@ jobs:
           cat >> "$RUNNER_TEMP/release-notes" <<'NOTES'
           Single-container Linux amd64 Alpine image (`alpine:3.24`) for Multi-platform-Parse. YouTube, Facebook, and Snapchat use the bundled, pinned yt-dlp/EJS/Deno runtime; all other platforms use native Go adapters.
 
-          Highlights in v2.0.0:
-          - Per-platform message block template engine (`{title}`, `{author}`, `{content}`, `{url}`, `{clean_url}`, `{platform}`, `{type}`, `{media_stats}`, plus `{raw_*}` variables), smart empty-line collapsing, Title==Content deduplication, URL tracking cleanup, and optional group quote-reply.
-          - Redesigned responsive Admin Control Panel with light/dark theme, 6-module navigation, slide-over platform configuration drawer, live message preview sandbox, single-entry cache deletion, config export/import, and frictionless 1-click non-sensitive saves.
-          - Removed Cap CAPTCHA / Valkey sidecar containers; authentication uses Argon2id password protection, forced initial password change, HttpOnly sessions, CSRF/same-origin validation, and persistent IP brute-force bans.
-          - Migrated container base from Debian to Alpine (`alpine:3.24`) for a compact single-container deployment.
+          Highlights in v2.1.0:
+          - Platform-direct unwatermarked Xiaohongshu videos (`originVideoKey`) and lossless raw images/covers (`ci.xiaohongshu.com` `?imageView2/2/w/format/png`), plus native high-res official video covers across all platforms.
+          - Canonical URL reconstruction & strict per-platform parameter allowlists (expanding short links and stripping all tracking/user-fingerprint parameters).
+          - Two-stage delivery architecture: Message 1 (`Cover + Title + Tags + Summary + Clean Link`) + Message 2 (standalone single video, or OneBot `send_group_forward_msg` / `send_private_forward_msg` merged forward for multi-image, multi-video, and LivePhoto posts, with single-image dedup and mixed-media fallback).
+          - Full-chain UX upgrades: canonical work-level cache & cooldown deduplication, graceful link-card degradation for oversized/over-duration videos, lightweight `👀` emoji processing reaction, no-parse markers (`-np` / `不解析`), group silent-error option, and platform Cookie expiration alerts in the Admin Panel.
 
           Offline / archive installation: download the `.tar.gz` image archive, `SHA256SUMS`, `compose.yaml`, `alpine-packages.txt`, and `default.env.example` from this Release. Save `default.env.example` locally as `.env.example`, verify with `sha256sum -c SHA256SUMS`, load the image archive with the command above, copy `.env.example` to `.env`, create `certs/`, and run `docker compose up -d --no-build`.
 

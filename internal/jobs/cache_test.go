@@ -181,7 +181,7 @@ func TestAcquireRetriesOnceOnRetryableMediaFailure(t *testing.T) {
 	resolveCalls, prepareCalls = 0, 0
 	s.prepare = func(_ context.Context, _ model.Config, _ model.ParseResult, _ string) ([]model.Artifact, error) {
 		prepareCalls++
-		return nil, errors.New("媒体实际时长超过限制")
+		return nil, errors.New("媒体分辨率超出安全限制")
 	}
 	key2 := strings.Repeat("e", 64)
 	if _, _, err = s.acquire(context.Background(), s.st.Config(), "https://www.douyin.com/video/1002", key2); err == nil {
@@ -192,5 +192,84 @@ func TestAcquireRetriesOnceOnRetryableMediaFailure(t *testing.T) {
 	}
 	if cached, _ := s.st.GetCache(key2); cached != nil {
 		t.Fatalf("failed non-retryable acquire must not write cache: %+v", cached)
+	}
+}
+
+func TestCanonicalCacheReuseAndGracefulOversizeDegradation(t *testing.T) {
+	s := cacheService(t)
+	prepareCount := 0
+	s.resolve = func(_ context.Context, _ model.Config, raw string) (*model.ParseResult, error) {
+		if strings.Contains(raw, "long-video") {
+			return &model.ParseResult{
+				Platform:     "bilibili",
+				SourceURL:    raw,
+				CanonicalURL: "https://www.bilibili.com/video/BV1LongVideo1",
+				CoverURL:     "https://cdn.example/cover.jpg",
+				Type:         "video",
+				Title:        "45分钟深度长视频",
+				Content:      "长视频简介",
+				Media:        []model.Media{{Kind: "video", URL: "https://cdn.example/long.mp4", Duration: 2700, ThumbnailURL: "https://cdn.example/cover.jpg"}},
+			}, nil
+		}
+		return &model.ParseResult{
+			Platform:     "douyin",
+			SourceURL:    raw,
+			CanonicalURL: "https://www.douyin.com/video/99887766",
+			Type:         "video",
+			Title:        "同作品测试",
+			Media:        []model.Media{{Kind: "video", URL: "https://cdn.example/v.mp4", Duration: 10}},
+		}, nil
+	}
+	s.prepare = func(_ context.Context, _ model.Config, r model.ParseResult, key string) ([]model.Artifact, error) {
+		prepareCount++
+		dir := filepath.Join(s.media.Root(), key)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return nil, err
+		}
+		if len(r.Media) == 0 && r.CoverURL != "" {
+			coverPath := filepath.Join(dir, "cover.jpg")
+			if err := os.WriteFile(coverPath, []byte("cover"), 0600); err != nil {
+				return nil, err
+			}
+			return []model.Artifact{{Kind: "cover", Path: coverPath, Size: 5}}, nil
+		}
+		videoPath := filepath.Join(dir, "video.mp4")
+		if err := os.WriteFile(videoPath, []byte("video"), 0600); err != nil {
+			return nil, err
+		}
+		return []model.Artifact{{Kind: "video", Path: videoPath, Size: 5, Duration: 10}}, nil
+	}
+
+	cfg := s.st.Config()
+	u1 := "https://v.douyin.com/shortA/"
+	k1 := parserCacheKey("douyin", u1, cfg)
+	e1, r1, err := s.acquire(context.Background(), cfg, u1, k1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r1()
+
+	// Second distinct share link pointing to the same CanonicalURL reuses cached media without re-running prepare!
+	u2 := "https://www.iesdouyin.com/share/video/99887766/?region=CN&mid=1"
+	k2 := parserCacheKey("douyin", u2, cfg)
+	e2, r2, err := s.acquire(context.Background(), cfg, u2, k2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2()
+	if e2.Key != e1.Key || prepareCount != 1 {
+		t.Fatalf("expected canonical cache reuse (prepareCount=1), got e1=%s e2=%s prepareCount=%d", e1.Key, e2.Key, prepareCount)
+	}
+
+	// Over-duration video gracefully degrades into a cover + link card instead of failing!
+	uLong := "https://www.bilibili.com/video/BV1LongVideo1?long-video=1"
+	kLong := parserCacheKey("bilibili", uLong, cfg)
+	eLong, rLong, err := s.acquire(context.Background(), cfg, uLong, kLong)
+	if err != nil {
+		t.Fatalf("expected graceful degradation, got error: %v", err)
+	}
+	defer rLong()
+	if eLong.Result.DegradedReason == "" || len(eLong.Files) != 1 || eLong.Files[0].Kind != "cover" {
+		t.Fatalf("unexpected degraded entry: %+v", eLong)
 	}
 }

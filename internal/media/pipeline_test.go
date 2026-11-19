@@ -215,3 +215,22 @@ func TestPrepareDownloadedAudioCopyFallbackToAAC(t *testing.T) {
 		t.Fatalf("audio fallback leaked quota: used=%d want=%d", used, videoStat.Size()+thumbStat.Size())
 	}
 }
+
+func TestNativeVideoUsesOfficialCoverWithoutQuotaLeak(t *testing.T) {
+	video := generateMedia(t, "video.mp4", "-f", "lavfi", "-i", "color=c=black:s=64x48:r=5:d=0.6", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart")
+	cover := generateMedia(t, "cover.png", "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=0.1", "-frames:v", "1")
+	p := newPreparation(t)
+	p.client = fixtureClient(map[string][]byte{"/video.mp4": video, "/cover.png": cover})
+	artifact, err := p.prepareItem(context.Background(), model.Media{Kind: "video", URL: "https://cdn.example/video.mp4", ThumbnailURL: "https://cdn.example/cover.png"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Ext(artifact.ThumbPath) != ".png" {
+		t.Fatalf("expected official .png cover to replace .jpg frame grab, got %q", artifact.ThumbPath)
+	}
+	videoStat, _ := os.Stat(artifact.Path)
+	thumbStat, _ := os.Stat(artifact.ThumbPath)
+	if used, _ := p.manager.Usage(); used != videoStat.Size()+thumbStat.Size() {
+		t.Fatalf("official cover replacement leaked quota: used=%d want=%d", used, videoStat.Size()+thumbStat.Size())
+	}
+}
