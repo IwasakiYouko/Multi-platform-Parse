@@ -46,7 +46,7 @@ func (p *preparation) prepareLivePhoto(ctx context.Context, item model.Media, he
 		}
 	}()
 	photoItem := item
-	photoItem.Kind, photoItem.VideoURL = "image", ""
+	photoItem.Kind, photoItem.VideoURL, photoItem.VideoBackupURLs = "image", "", nil
 	photo, err := p.prepareItem(ctx, photoItem, headers)
 	if err != nil {
 		return model.Artifact{}, err
@@ -54,7 +54,7 @@ func (p *preparation) prepareLivePhoto(ctx context.Context, item model.Media, he
 	if photo.Width == 0 || photo.ThumbPath != "" || (photo.Kind != "image" && photo.Kind != "file") {
 		return model.Artifact{}, errors.New("实况照片图片地址实际返回非图片媒体")
 	}
-	video, err := p.prepareItem(ctx, model.Media{Kind: "video", URL: item.VideoURL}, headers)
+	video, err := p.prepareItem(ctx, model.Media{Kind: "video", URL: item.VideoURL, BackupURLs: item.VideoBackupURLs}, headers)
 	if err != nil {
 		return model.Artifact{}, err
 	}

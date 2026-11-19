@@ -310,6 +310,13 @@ func TestDeliverMixedForwardNegativeACKFallsBackToImagesForwardAndSeparateVideos
 	if imgFwd.Action != "send_group_forward_msg" || len(imgFwd.Params.Messages) != 2 {
 		t.Fatalf("expected 2-image fallback forward, got %+v", imgFwd)
 	}
+	img0 := forwardNodeSegment(t, imgFwd.Params.Messages[0])
+	img1 := forwardNodeSegment(t, imgFwd.Params.Messages[1])
+	if img0.Type != "image" || img1.Type != "image" {
+		t.Fatalf("expected image-only forward nodes, got %s, %s", img0.Type, img1.Type)
+	}
+	x.location(t, img0.Data["file"], entry.Files[0].Path)
+	x.location(t, img1.Data["file"], entry.Files[1].Path)
 	x.ack(t, imgFwd, 0)
 
 	vidMsg := x.next(t)

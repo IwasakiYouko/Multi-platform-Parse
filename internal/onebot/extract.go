@@ -54,6 +54,26 @@ type extractor struct {
 	seen      map[string]bool
 }
 
+func stripCQBlocks(text string) string {
+	var out strings.Builder
+	for text != "" && out.Len() <= 512 {
+		start := strings.Index(text, "[CQ:")
+		if start < 0 {
+			out.WriteString(text)
+			break
+		}
+		out.WriteString(text[:start])
+		text = text[start:]
+		end := strings.IndexByte(text, ']')
+		if end < 0 {
+			break
+		}
+		out.WriteByte(' ')
+		text = text[end+1:]
+	}
+	return out.String()
+}
+
 func hasNoParseMarker(segments []model.Segment) bool {
 	var plain strings.Builder
 	for _, seg := range segments[:min(len(segments), 200)] {
@@ -61,11 +81,7 @@ func hasNoParseMarker(segments []model.Segment) bool {
 			continue
 		}
 		text, _ := seg.Data["text"].(string)
-		if idx := strings.Index(text, "[CQ:"); idx >= 0 {
-			plain.WriteString(text[:idx])
-		} else {
-			plain.WriteString(text)
-		}
+		plain.WriteString(stripCQBlocks(text))
 		if plain.Len() > 512 {
 			break
 		}

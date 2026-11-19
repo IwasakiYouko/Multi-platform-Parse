@@ -118,7 +118,7 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 	}
 	if r, err := majorDouyinMobile(ctx, c, id); err == nil {
 		r.SourceURL = source
-		if hasCookie && webErr != nil {
+		if hasCookie && webErr != nil && isCookieAuthError(webErr.Error()) {
 			r.CookieExpired = true
 		}
 		return r, nil

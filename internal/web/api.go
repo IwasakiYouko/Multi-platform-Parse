@@ -384,13 +384,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 			}
 		}
 		msg2Mode := "none"
-		if visualItems == 1 && videos == 1 {
-			msg2Mode = "direct_video"
-		} else if visualItems >= 2 {
-			if cfg.Media.ForwardEnabled {
-				msg2Mode = "merged_forward"
-			} else {
-				msg2Mode = "sequential"
+		showCover := false
+		if cfg.Media.AutoDownload {
+			showCover = policy.EffectiveShowCover(cfg, res.Platform) || (visualItems == 1 && images == 1)
+			if visualItems == 1 && videos == 1 {
+				msg2Mode = "direct_video"
+			} else if visualItems >= 2 {
+				if cfg.Media.ForwardEnabled {
+					msg2Mode = "merged_forward"
+				} else {
+					msg2Mode = "sequential"
+				}
 			}
 		}
 		_, fullInForward := policy.FullTextForForward(cfg, *res)
@@ -399,7 +403,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 			"rendered":           rendered,
 			"clean_url":          policy.CleanTrackingURL(policy.EffectiveSourceURL(*res)),
 			"effective_template": effectiveTemplate,
-			"show_cover":         policy.EffectiveShowCover(cfg, res.Platform) || (visualItems == 1 && images == 1),
+			"show_cover":         showCover,
 			"media_count":        len(res.Media),
 			"visual_items":       visualItems,
 			"message2_mode":      msg2Mode,

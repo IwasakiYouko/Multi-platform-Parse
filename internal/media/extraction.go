@@ -169,7 +169,7 @@ func (p *preparation) optionalExtractionCover(ctx context.Context, raw string, h
 	var pathErr *os.PathError
 	var linkErr *os.LinkError
 	var syscallErr *os.SyscallError
-	if errors.As(prepareErr, &pathErr) || errors.As(prepareErr, &linkErr) || errors.As(prepareErr, &syscallErr) || errors.Is(prepareErr, errInvalidReservation) || errors.Is(prepareErr, errMediaDiskLimit) || errors.Is(prepareErr, errMediaAccountingOverflow) {
+	if errors.As(prepareErr, &pathErr) || errors.As(prepareErr, &linkErr) || errors.As(prepareErr, &syscallErr) || errors.Is(prepareErr, errMediaDiskLimit) || errors.Is(prepareErr, errInvalidReservation) || errors.Is(prepareErr, errMediaAccountingOverflow) {
 		return model.Artifact{}, prepareErr
 	}
 	return model.Artifact{}, nil

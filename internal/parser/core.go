@@ -36,6 +36,21 @@ func Register(id string, fn Resolver) {
 	}
 	registry[id] = fn
 }
+func isCookieAuthError(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, transient := range []string{"http 500", "http 502", "http 503", "http 504", "timeout", "deadline", "connection", "eof", "无法解码", "json无效"} {
+		if strings.Contains(lower, transient) {
+			return false
+		}
+	}
+	for _, auth := range []string{"登录", "cookie", "http 401", "http 403", "拒绝访问", "unauth", "forbidden", "restricted", "未返回请求笔记", "未返回作品详情"} {
+		if strings.Contains(lower, auth) {
+			return true
+		}
+	}
+	return false
+}
+
 func Available(id string) bool {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
@@ -87,7 +102,7 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 	}
 	if strings.TrimSpace(policy.Cookie) != "" && !r.CookieExpired && len(r.FallbackErrors) > 0 {
 		firstName := strings.ToLower(r.FallbackErrors[0].Name)
-		if strings.Contains(firstName, "cookie") || strings.Contains(firstName, "auth") {
+		if (strings.Contains(firstName, "cookie") || strings.Contains(firstName, "auth")) && isCookieAuthError(r.FallbackErrors[0].Error) {
 			r.CookieExpired = true
 		}
 	}

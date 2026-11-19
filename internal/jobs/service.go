@@ -128,11 +128,16 @@ func (s *Service) Counts() (int, int) {
 }
 
 func (s *Service) recordCookieHealth(platform string, cfg model.Config, expired bool) {
-	if strings.TrimSpace(cfg.Platforms[platform].Cookie) == "" {
+	snapshotCookie := strings.TrimSpace(cfg.Platforms[platform].Cookie)
+	if snapshotCookie == "" {
 		return
 	}
+	currentCookie := strings.TrimSpace(s.st.Config().Platforms[platform].Cookie)
 	s.cookieMu.Lock()
 	defer s.cookieMu.Unlock()
+	if currentCookie == "" || currentCookie != snapshotCookie {
+		return
+	}
 	if expired {
 		s.cookieAlerts[platform] = model.CookieAlert{
 			Platform:   platform,
@@ -190,7 +195,7 @@ func (s *Service) HandleEvent(e model.Event, links []string) {
 	seenCanonical := make(map[string]bool, len(links))
 	deduped := make([]string, 0, min(len(links), maxLinks))
 	for _, raw := range links {
-		canon := policy.CleanTrackingURL(netx.NormalizeURL(raw))
+		canon := policy.WorkIdentityURL(netx.NormalizeURL(raw))
 		if canon == "" || seenCanonical[canon] {
 			continue
 		}
@@ -207,15 +212,12 @@ func (s *Service) HandleEvent(e model.Event, links []string) {
 	reactor, canReact := s.sender.(EmojiReactor)
 	useReaction := canReact && cfg.Policy.EmojiReaction && e.BotID != "" && e.MessageID != ""
 	var remaining atomic.Int32
-	var reactionSet atomic.Bool
+	doneCh := make(chan struct{})
+	var closeOnce sync.Once
 
 	onTaskDone := func() {
-		if remaining.Add(-1) == 0 && reactionSet.Load() {
-			go func() {
-				rCtx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
-				defer cancel()
-				_ = reactor.SetMsgEmojiLike(rCtx, e.BotID, e.MessageID, reactionEmojiEyes, false)
-			}()
+		if remaining.Add(-1) == 0 {
+			closeOnce.Do(func() { close(doneCh) })
 		}
 	}
 
@@ -231,11 +233,21 @@ func (s *Service) HandleEvent(e model.Event, links []string) {
 		}
 	}
 	if accepted > 0 && useReaction {
-		reactionSet.Store(true)
 		go func() {
 			rCtx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
-			defer cancel()
-			_ = reactor.SetMsgEmojiLike(rCtx, e.BotID, e.MessageID, reactionEmojiEyes, true)
+			setErr := reactor.SetMsgEmojiLike(rCtx, e.BotID, e.MessageID, reactionEmojiEyes, true)
+			cancel()
+			if setErr != nil {
+				return
+			}
+			select {
+			case <-doneCh:
+			case <-s.ctx.Done():
+				return
+			}
+			cCtx, cCancel := context.WithTimeout(s.ctx, 5*time.Second)
+			defer cCancel()
+			_ = reactor.SetMsgEmojiLike(cCtx, e.BotID, e.MessageID, reactionEmojiEyes, false)
 		}()
 	}
 	onTaskDone()
@@ -388,7 +400,7 @@ func (s *Service) execute(w work) {
 		w.task.CacheKey = entry.Key
 		_ = s.st.PutTask(w.task)
 		// P1: Prevent duplicate group spam when different short links resolve to the same canonical work.
-		canonURL := policy.CleanTrackingURL(policy.EffectiveSourceURL(entry.Result))
+		canonURL := policy.WorkIdentityURL(policy.EffectiveSourceURL(entry.Result))
 		var dupErr error
 		canonicalCooldownKey, dupErr = s.bindCanonicalCooldown(w.target, canonURL, w.cooldownKey, w.task.ID, s.st.Config().Policy.CooldownSeconds)
 		if dupErr != nil {
@@ -482,8 +494,25 @@ func degradeOverDurationMetadata(cfg model.Config, r *model.ParseResult) bool {
 		return false
 	}
 	r.DegradedReason = fmt.Sprintf("💡 视频时长（%s）超过直发上限（%s），已略过视频直发，请点击上方链接观看", formatDurationBrief(maxDur), formatDurationBrief(float64(cfg.Media.MaxDurationSeconds)))
+	r.DegradedMaxDuration = cfg.Media.MaxDurationSeconds
+	r.DegradedMaxBytes = cfg.Media.MaxBytes
 	r.Media = nil
 	r.Extraction = nil
+	return true
+}
+
+func cacheCompatibleWithConfig(e *model.CacheEntry, cfg model.Config) bool {
+	if e == nil {
+		return false
+	}
+	if e.Result.DegradedReason != "" {
+		if cfg.Media.OversizeMode != "link" {
+			return false
+		}
+		if e.Result.DegradedMaxDuration != cfg.Media.MaxDurationSeconds || e.Result.DegradedMaxBytes != cfg.Media.MaxBytes {
+			return false
+		}
+	}
 	return true
 }
 
@@ -521,10 +550,10 @@ func (s *Service) findCanonicalCacheLocked(platform, canonURL string, cfg model.
 		if !now.Before(expires) {
 			continue
 		}
-		if parserCacheKey(e.Platform, e.URL, cfg) != e.Key {
+		if parserCacheKey(e.Platform, e.URL, cfg) != e.Key || !cacheCompatibleWithConfig(e, cfg) {
 			continue
 		}
-		if policy.CleanTrackingURL(policy.EffectiveSourceURL(e.Result)) == canonURL && s.filesExist(e) {
+		if policy.WorkIdentityURL(policy.EffectiveSourceURL(e.Result)) == canonURL && s.filesExist(e) {
 			copied := *e
 			return &copied
 		}
@@ -545,7 +574,7 @@ func (s *Service) acquire(ctx context.Context, cfg model.Config, raw, key string
 				s.cacheMu.Unlock()
 				return nil, nil, err
 			}
-			if e != nil && s.filesExist(e) {
+			if e != nil && cacheCompatibleWithConfig(e, cfg) && s.filesExist(e) {
 				s.leases[key]++
 				s.cacheMu.Unlock()
 				return e, func() { s.release(key) }, nil
@@ -606,7 +635,7 @@ func (s *Service) acquire(ctx context.Context, cfg model.Config, raw, key string
 			s.recordCookieHealth(result.Platform, cfg, result.CookieExpired)
 
 			// P1: Reuse an existing cached work if a different short link or tracking URL resolved to the same canonical work.
-			canonURL := policy.CleanTrackingURL(policy.EffectiveSourceURL(*result))
+			canonURL := policy.WorkIdentityURL(policy.EffectiveSourceURL(*result))
 			if canonURL != "" {
 				s.cacheMu.Lock()
 				if existing := s.findCanonicalCacheLocked(result.Platform, canonURL, cfg); existing != nil && existing.Key != key {
@@ -641,11 +670,26 @@ func (s *Service) acquire(ctx context.Context, cfg model.Config, raw, key string
 				} else {
 					result.DegradedReason = "💡 视频体积超过群内直发上限，已略过视频直发，请点击上方链接观看"
 				}
+				result.DegradedMaxDuration = cfg.Media.MaxDurationSeconds
+				result.DegradedMaxBytes = cfg.Media.MaxBytes
 				result.Media = nil
 				result.Extraction = nil
-				_ = s.media.Remove(key)
+				if removeErr := s.media.Remove(key); removeErr != nil {
+					err = removeErr
+					break
+				}
 				if result.CoverURL != "" {
-					files, _ = prepareFn(ctx, cfg, *result, key)
+					coverFiles, coverErr := prepareFn(ctx, cfg, *result, key)
+					if coverErr != nil {
+						if ctx.Err() != nil {
+							err = coverErr
+							break
+						}
+						_ = s.media.Remove(key)
+						files = nil
+					} else {
+						files = coverFiles
+					}
 				} else {
 					files = nil
 				}
@@ -1050,6 +1094,16 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 	}
 	if text := policy.FormatMessage(cfg, r, e.Files); text != "" {
 		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": text}})
+	} else if strings.TrimSpace(r.DegradedReason) != "" {
+		fallbackURL := policy.DisplayResultURL(cfg, r)
+		if fallbackURL == "" {
+			fallbackURL = r.SourceURL
+		}
+		degradedText := strings.TrimSpace(r.DegradedReason)
+		if fallbackURL != "" {
+			degradedText = "链接：" + fallbackURL + "\n" + degradedText
+		}
+		initial = append(initial, model.Segment{Type: "text", Data: map[string]any{"text": degradedText}})
 	} else if len(e.Files) == 0 {
 		fallbackURL := policy.DisplayResultURL(cfg, r)
 		if fallbackURL == "" {
@@ -1124,6 +1178,37 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 	if err := check(); err != nil {
 		return err
 	}
+	// Re-check runtime MaxBytes before merged forward in case admin tightened policy mid-flight.
+	current := s.st.Config()
+	if current.Media.OversizeMode == "file" {
+		kept := mediaItems[:0]
+		for _, item := range mediaItems {
+			if st, statErr := os.Stat(item.path); statErr == nil && st.Size() > current.Media.MaxBytes {
+				addUploadItem(item.path)
+				continue
+			}
+			kept = append(kept, item)
+		}
+		mediaItems = kept
+		if len(mediaItems) <= 1 {
+			mIdx, uIdx := 0, 0
+			for mIdx < len(mediaItems) || uIdx < len(uploads) {
+				if mIdx < len(mediaItems) && (uIdx >= len(uploads) || mediaItems[mIdx].seq < uploads[uIdx].seq) {
+					if err := sendDirect(mediaItems[mIdx]); err != nil {
+						return err
+					}
+					mIdx++
+				} else {
+					if err := sendUpload(uploads[uIdx]); err != nil {
+						return err
+					}
+					uIdx++
+				}
+			}
+			return nil
+		}
+	}
+
 	nickname := forwardNickname(r)
 	buildNodes := func(items []deliverMediaItem, includeFullText bool) []model.ForwardNode {
 		var nodes []model.ForwardNode
@@ -1145,8 +1230,23 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 		}
 		return nodes
 	}
+	sendForwardBatched := func(nodes []model.ForwardNode) error {
+		const maxBatch = 200
+		for start := 0; start < len(nodes); start += maxBatch {
+			if start > 0 {
+				if err := check(); err != nil {
+					return err
+				}
+			}
+			end := min(start+maxBatch, len(nodes))
+			if err := s.sender.SendForward(ctx, target, nodes[start:end]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 
-	forwardErr := s.sender.SendForward(ctx, target, buildNodes(mediaItems, true))
+	forwardErr := sendForwardBatched(buildNodes(mediaItems, true))
 	if forwardErr != nil {
 		var apiErr *onebot.APIError
 		var imagesOnly, videosOnly []deliverMediaItem
@@ -1164,12 +1264,22 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 				if err := check(); err != nil {
 					return err
 				}
-				if err := s.sender.SendForward(ctx, target, buildNodes(imagesOnly, true)); err != nil {
+				if err := sendForwardBatched(buildNodes(imagesOnly, true)); err != nil {
 					return fmt.Errorf("发送图片合并转发失败: %w", err)
 				}
-			} else if len(imagesOnly) == 1 && filepath.Clean(imagesOnly[0].path) != filepath.Clean(coverPath) {
-				if err := sendDirect(imagesOnly[0]); err != nil {
-					return err
+			} else {
+				if fullTextNodes := buildNodes(nil, true); len(fullTextNodes) > 0 {
+					if err := check(); err != nil {
+						return err
+					}
+					if err := sendForwardBatched(fullTextNodes); err != nil {
+						return fmt.Errorf("发送原文合并转发失败: %w", err)
+					}
+				}
+				if len(imagesOnly) == 1 && filepath.Clean(imagesOnly[0].path) != filepath.Clean(coverPath) {
+					if err := sendDirect(imagesOnly[0]); err != nil {
+						return err
+					}
 				}
 			}
 			for _, vid := range videosOnly {

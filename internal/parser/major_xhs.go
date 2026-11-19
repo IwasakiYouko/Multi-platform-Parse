@@ -81,7 +81,7 @@ func majorXHS(ctx context.Context, c *http.Client, raw, cookie string) (*model.P
 		return extract(session, false)
 	}}, referenceStage{Name: "移动端", Run: func() (*model.ParseResult, error) { return extract("", true) }})
 	r, err := referenceFallback(stages, false)
-	if err == nil && r != nil && hasCookie && len(r.FallbackErrors) > 0 && r.FallbackErrors[0].Name == "cookie" {
+	if err == nil && r != nil && hasCookie && len(r.FallbackErrors) > 0 && r.FallbackErrors[0].Name == "cookie" && isCookieAuthError(r.FallbackErrors[0].Error) {
 		r.CookieExpired = true
 	}
 	return r, err
@@ -439,12 +439,13 @@ func majorXHSParseNote(note map[string]any) (*model.ParseResult, error) {
 					liveStreamURL = majorURL(stream["masterUrl"])
 					liveDuration = Number(stream["duration"]) / 1000
 				}
-				liveURL, _ := majorXHSOriginVideoURLs(liveOrigin, liveStreamURL, liveBackups)
+				liveURL, liveVideoBackups := majorXHSOriginVideoURLs(liveOrigin, liveStreamURL, liveBackups)
 				if liveURL == "" {
 					continue
 				}
 				m.Kind = "livephoto"
 				m.VideoURL = liveURL
+				m.VideoBackupURLs = liveVideoBackups
 				m.Duration = liveDuration
 				m.ThumbnailURL = uri
 			}

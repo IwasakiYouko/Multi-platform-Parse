@@ -57,6 +57,19 @@ func TestLivePhotoPreservesPairAndAccounting(t *testing.T) {
 	if err != nil || used != actual || p.bytes != actual || used <= a.Size+a.VideoSize {
 		t.Fatalf("pair/thumbnail accounting: used=%d preparation=%d actual=%d: %v", used, p.bytes, actual, err)
 	}
+
+	// Verify VideoBackupURLs fallback when primary companion VideoURL fails.
+	p2 := newPreparation(t)
+	p2.client = fixtureClient(map[string][]byte{"/photo": photo, "/video-backup": video})
+	a2, err := p2.prepareItem(context.Background(), model.Media{
+		Kind:            "livephoto",
+		URL:             "https://cdn.example/photo",
+		VideoURL:        "https://cdn.example/video-broken-404",
+		VideoBackupURLs: []string{"https://cdn.example/video-backup"},
+	}, nil)
+	if err != nil || a2.Kind != "livephoto" || a2.VideoPath == "" {
+		t.Fatalf("LivePhoto VideoBackupURLs fallback failed: %+v %v", a2, err)
+	}
 }
 
 func TestLivePhotoCompanionFailureIsAtomic(t *testing.T) {

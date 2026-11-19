@@ -268,8 +268,21 @@ func TestCanonicalCacheReuseAndGracefulOversizeDegradation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected graceful degradation, got error: %v", err)
 	}
-	defer rLong()
 	if eLong.Result.DegradedReason == "" || len(eLong.Files) != 1 || eLong.Files[0].Kind != "cover" {
+		rLong()
 		t.Fatalf("unexpected degraded entry: %+v", eLong)
+	}
+	rLong()
+
+	// Raising MaxDurationSeconds must invalidate the degraded entry and download the full video!
+	cfgRaised := cfg
+	cfgRaised.Media.MaxDurationSeconds = 3600
+	eLongFull, rLongFull, err := s.acquire(context.Background(), cfgRaised, uLong, kLong)
+	if err != nil {
+		t.Fatalf("expected re-acquire after raising MaxDurationSeconds, got error: %v", err)
+	}
+	defer rLongFull()
+	if eLongFull.Result.DegradedReason != "" || len(eLongFull.Files) != 1 || eLongFull.Files[0].Kind != "video" {
+		t.Fatalf("expected full video after raising MaxDurationSeconds, got: %+v", eLongFull)
 	}
 }

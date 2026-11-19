@@ -71,7 +71,7 @@ var (
 	xhsTopicTagRe    = regexp.MustCompile(`#([^#\[\]\r\n]{1,40})\[话题\]#`)
 	doubleHashTagRe  = regexp.MustCompile(`#([^#\s\r\n][^#\r\n]{0,38}?)#`)
 	singleHashTagRe  = regexp.MustCompile(`(?:^|[\s])#([\p{L}\p{N}_][\p{L}\p{N}_\-]{0,39})`)
-	trailingTagsRe   = regexp.MustCompile(`(?:\s*#[\p{L}\p{N}_][\p{L}\p{N}_\-]{0,39}#?)+\s*$`)
+	trailingTagsRe   = regexp.MustCompile(`(?:^|\s+)#[\p{L}\p{N}_][\p{L}\p{N}_\-]{0,39}#?(?:\s*#[\p{L}\p{N}_][\p{L}\p{N}_\-]{0,39}#?)*\s*$`)
 	pureTagLineToken = regexp.MustCompile(`^#[\p{L}\p{N}_][\p{L}\p{N}_\-]{0,39}#?$`)
 )
 
@@ -124,14 +124,15 @@ func CleanTrackingURL(raw string) string {
 	if qErr != nil {
 		q = url.Values{}
 	}
-	u.Fragment = ""
 
 	switch {
 	case matchDomain(host, "b23.tv", "bili2233.cn"):
+		u.Fragment = ""
 		u.RawQuery = allowQueryKeys(q, "p")
 		return u.String()
 
 	case matchDomain(host, "bilibili.com"):
+		u.Fragment = ""
 		if host == "m.bilibili.com" || host == "bilibili.com" {
 			u.Host = "www.bilibili.com"
 		}
@@ -144,6 +145,7 @@ func CleanTrackingURL(raw string) string {
 		return u.String()
 
 	case matchDomain(host, "douyin.com", "iesdouyin.com"):
+		u.Fragment = ""
 		if host == "v.douyin.com" {
 			u.RawQuery = ""
 			return u.String()
@@ -161,10 +163,12 @@ func CleanTrackingURL(raw string) string {
 		return u.String()
 
 	case matchDomain(host, "xhslink.com", "xhslink.cn"):
+		u.Fragment = ""
 		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "xiaohongshu.com"):
+		u.Fragment = ""
 		u.Scheme = "https"
 		u.Host = "www.xiaohongshu.com"
 		if strings.HasPrefix(u.Path, "/discovery/item/") {
@@ -179,6 +183,7 @@ func CleanTrackingURL(raw string) string {
 		return u.String()
 
 	case matchDomain(host, "kuaishou.com", "chenzhongtech.com", "gifshow.com"):
+		u.Fragment = ""
 		if m := ksPhotoPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
 			return "https://www.kuaishou.com/short-video/" + strings.TrimSuffix(m[1], ".html")
 		}
@@ -186,6 +191,7 @@ func CleanTrackingURL(raw string) string {
 		return u.String()
 
 	case matchDomain(host, "weibo.com", "weibo.cn"):
+		u.Fragment = ""
 		if strings.HasPrefix(u.Path, "/show") {
 			u.RawQuery = allowQueryKeys(q, "fid")
 		} else {
@@ -194,11 +200,13 @@ func CleanTrackingURL(raw string) string {
 		return u.String()
 
 	case matchDomain(host, "tieba.baidu.com", "tiebap.baidu.com"):
+		u.Fragment = ""
 		u.Host = "tieba.baidu.com"
 		u.RawQuery = allowQueryKeys(q, "see_lz", "pn")
 		return u.String()
 
 	case matchDomain(host, "mp.weixin.qq.com"):
+		u.Fragment = ""
 		if strings.HasPrefix(u.Path, "/s/") && len(u.Path) > 3 {
 			u.RawQuery = ""
 		} else {
@@ -207,28 +215,34 @@ func CleanTrackingURL(raw string) string {
 		return u.String()
 
 	case matchDomain(host, "twitter.com", "x.com", "fixupx.com"):
+		u.Fragment = ""
 		u.Scheme = "https"
 		u.Host = "x.com"
 		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "t.co", "instagram.com", "instagr.am", "threads.net", "threads.com", "tiktok.com", "zhihu.com", "zhihu.link", "coolapk.com", "coolapk1s.com", "pipix.com", "toutiao.com", "bgm.tv", "bangumi.tv", "chii.in", "medium.com", "dou.bz", "douc.cc"):
+		u.Fragment = ""
 		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "douban.com"):
+		u.Fragment = ""
 		u.RawQuery = allowQueryKeys(q, "uri")
 		return u.String()
 
 	case matchDomain(host, "xiaoheihe.cn", "xiaoheihe.com"):
+		u.Fragment = ""
 		u.RawQuery = allowQueryKeys(q, "link_id")
 		return u.String()
 
 	case matchDomain(host, "izuiyou.com", "xiaochuankeji.cn"):
+		u.Fragment = ""
 		u.RawQuery = allowQueryKeys(q, "pid")
 		return u.String()
 
 	case matchDomain(host, "youtube.com", "youtu.be"):
+		u.Fragment = ""
 		if host == "youtu.be" {
 			u.RawQuery = allowQueryKeys(q, "t")
 		} else if strings.HasPrefix(u.Path, "/watch") {
@@ -239,12 +253,13 @@ func CleanTrackingURL(raw string) string {
 		return u.String()
 
 	case matchDomain(host, "facebook.com", "fb.watch", "fb.com", "snapchat.com"):
+		u.Fragment = ""
 		u.RawQuery = allowQueryKeys(q, "v", "id", "story_fbid", "fbid")
 		return u.String()
 	}
 
 	if u.RawQuery == "" {
-		return u.String()
+		return trimmed
 	}
 	changed := false
 	for key := range q {
@@ -259,6 +274,30 @@ func CleanTrackingURL(raw string) string {
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// WorkIdentityURL returns a token-neutral canonical identity URL for deduplicating
+// cooldowns and cached works across distinct share links (e.g., XHS links with per-share xsec_token).
+func WorkIdentityURL(raw string) string {
+	cleaned := CleanTrackingURL(raw)
+	if cleaned == "" {
+		return ""
+	}
+	u, err := url.Parse(cleaned)
+	if err != nil || u.Host == "" {
+		return cleaned
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if matchDomain(host, "xiaohongshu.com") && u.RawQuery != "" {
+		q, qErr := url.ParseQuery(u.RawQuery)
+		if qErr == nil {
+			q.Del("xsec_token")
+			q.Del("xsec_source")
+			u.RawQuery = q.Encode()
+			return u.String()
+		}
+	}
+	return cleaned
 }
 
 // EffectiveSourceURL prefers the resolved CanonicalURL over the raw input SourceURL.
@@ -564,9 +603,12 @@ func prepareCleanedBody(r model.ParseResult, stripTags bool) ([]string, string, 
 	return tags, cleanedTitle, cleanedContent
 }
 
-// FullTextForForward returns the cleaned untruncated content and whether Message 1 truncated it.
+// FullTextForForward returns the cleaned content (up to 8,000 runes) and whether Message 1 truncated it.
 func FullTextForForward(cfg model.Config, r model.ParseResult) (string, bool) {
 	tmpl := ResolveMessageTemplate(cfg, r.Platform)
+	if !strings.Contains(tmpl, "{content}") && !strings.Contains(tmpl, "{raw_content}") {
+		return "", false
+	}
 	hasTagsVar := strings.Contains(tmpl, "{tags}") || strings.Contains(tmpl, "{raw_tags}")
 	_, cleanedTitle, cleanedContent := prepareCleanedBody(r, hasTagsVar)
 	if strings.TrimSpace(cleanedContent) == "" {
@@ -577,8 +619,8 @@ func FullTextForForward(cfg model.Config, r model.ParseResult) (string, bool) {
 		return "", false
 	}
 	limit := cfg.Media.SummaryLength
-	if limit <= 0 {
-		limit = 1800
+	if limit <= 0 || limit > 8000 {
+		limit = 8000
 	}
 	runes := []rune(cleanedContent)
 	if len(runes) <= limit {
@@ -620,8 +662,8 @@ func FormatWithTemplate(cfg model.Config, tmpl string, r model.ParseResult, file
 	}
 
 	contentLimit := cfg.Media.SummaryLength
-	if contentLimit <= 0 || contentLimit > 4000 {
-		contentLimit = 1800
+	if contentLimit <= 0 || contentLimit > 8000 {
+		contentLimit = 8000
 	}
 	rawContent := ""
 	if strings.TrimSpace(contentSource) != "" {

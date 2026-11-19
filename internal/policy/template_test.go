@@ -98,6 +98,21 @@ func TestFormatMessageDeduplicatesIdenticalTitleAndContentAndSummary(t *testing.
 	if !truncated || full != strings.Repeat("正文内容测试", 10) {
 		t.Fatalf("FullTextForForward = (%q, %v)", full, truncated)
 	}
+
+	// FullTextForForward must return false when template omits {content} / {raw_content}.
+	xhsPol := cfg.Platforms["xhs"]
+	xhsPol.TemplateMode = "custom"
+	xhsPol.MessageTemplate = "{title}\n{url}"
+	cfg.Platforms["xhs"] = xhsPol
+	if full, truncated = FullTextForForward(cfg, longRes); truncated || full != "" {
+		t.Fatalf("expected FullTextForForward disabled for title-only template, got (%q, %v)", full, truncated)
+	}
+
+	// Trailing URL fragment like https://example.com/#chapter must not be stripped as a hashtag.
+	tags, cleaned := ExtractAndCleanTags(nil, "详情见 https://example.com/docs/#chapter")
+	if len(tags) != 0 || cleaned != "详情见 https://example.com/docs/#chapter" {
+		t.Fatalf("URL fragment misparsed as hashtag: tags=%v cleaned=%q", tags, cleaned)
+	}
 }
 
 func TestCleanTrackingURLStrictAllowlistsAcrossPlatforms(t *testing.T) {
@@ -140,11 +155,21 @@ func TestCleanTrackingURLStrictAllowlistsAcrossPlatforms(t *testing.T) {
 			"https://mp.weixin.qq.com/s?__biz=MzA1&mid=2650&idx=1&sn=deadbeef&chksm=aaa&mpshare=1&scene=1&utm_source=wechat",
 			"https://mp.weixin.qq.com/s?__biz=MzA1&idx=1&mid=2650&sn=deadbeef",
 		},
+		{
+			"https://example.com/#/post/42",
+			"https://example.com/#/post/42",
+		},
 	}
 	for _, tc := range cases {
 		if got := CleanTrackingURL(tc.in); got != tc.want {
 			t.Errorf("CleanTrackingURL(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+
+	xhsA := "https://www.xiaohongshu.com/explore/66112233?xsec_token=TOKEN_A&xsec_source=pc_share&xhsshare=CopyLink"
+	xhsB := "https://www.xiaohongshu.com/discovery/item/66112233?xsec_token=TOKEN_B&xsec_source=app_share"
+	if idA, idB := WorkIdentityURL(xhsA), WorkIdentityURL(xhsB); idA != "https://www.xiaohongshu.com/explore/66112233" || idA != idB {
+		t.Fatalf("WorkIdentityURL failed to unify XHS tokens: idA=%q idB=%q", idA, idB)
 	}
 }
 

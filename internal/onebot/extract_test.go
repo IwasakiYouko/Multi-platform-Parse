@@ -118,7 +118,14 @@ func TestExtractBounds(t *testing.T) {
 }
 
 func TestExtractIgnoresNoParseMarkersMergedForwardAndCardIcons(t *testing.T) {
-	for _, marker := range []string{"-np https://b23.tv/abc", "不解析 https://b23.tv/abc", "/help https://b23.tv/abc", "先看这个 [不解析] https://b23.tv/abc"} {
+	for _, marker := range []string{
+		"-np https://b23.tv/abc",
+		"不解析 https://b23.tv/abc",
+		"/help https://b23.tv/abc",
+		"先看这个 [不解析] https://b23.tv/abc",
+		"[CQ:at,qq=12345] -np https://b23.tv/abc",
+		"[CQ:reply,id=99][CQ:at,qq=12345] 不解析 https://b23.tv/abc",
+	} {
 		ev := model.Event{Segments: []model.Segment{{Type: "text", Data: map[string]any{"text": marker}}}}
 		if got := Extract(ev); len(got) != 0 {
 			t.Fatalf("marker %q did not suppress extraction: %#v", marker, got)

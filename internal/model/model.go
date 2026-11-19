@@ -240,8 +240,6 @@ func NormalizeConfig(c *Config) {
 		c.Policy.GroupBlacklist = []int64{}
 	}
 	if c.SchemaVersion < CurrentConfigSchema {
-		c.Media.CleanURL = true
-		c.Media.ForwardEnabled = true
 		if c.Media.SummaryLength == 0 {
 			c.Media.SummaryLength = 300
 		}
@@ -369,35 +367,38 @@ type FallbackAttempt struct {
 }
 
 type Media struct {
-	Kind         string            `json:"kind"`
-	URL          string            `json:"url"`
-	AudioURL     string            `json:"audio_url,omitempty"`
-	VideoURL     string            `json:"video_url,omitempty"`
-	ThumbnailURL string            `json:"thumbnail_url,omitempty"`
-	BackupURLs   []string          `json:"backup_urls,omitempty"`
-	Headers      map[string]string `json:"headers,omitempty"`
-	Width        int               `json:"width,omitempty"`
-	Height       int               `json:"height,omitempty"`
-	Duration     float64           `json:"duration,omitempty"`
-	Ext          string            `json:"ext,omitempty"`
+	Kind            string            `json:"kind"`
+	URL             string            `json:"url"`
+	AudioURL        string            `json:"audio_url,omitempty"`
+	VideoURL        string            `json:"video_url,omitempty"`
+	VideoBackupURLs []string          `json:"video_backup_urls,omitempty"`
+	ThumbnailURL    string            `json:"thumbnail_url,omitempty"`
+	BackupURLs      []string          `json:"backup_urls,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	Width           int               `json:"width,omitempty"`
+	Height          int               `json:"height,omitempty"`
+	Duration        float64           `json:"duration,omitempty"`
+	Ext             string            `json:"ext,omitempty"`
 }
 type ParseResult struct {
-	Platform        string            `json:"platform"`
-	SourceURL       string            `json:"source_url"`
-	CanonicalURL    string            `json:"canonical_url,omitempty"`
-	CoverURL        string            `json:"cover_url,omitempty"`
-	Title           string            `json:"title"`
-	Author          string            `json:"author,omitempty"`
-	Tags            []string          `json:"tags,omitempty"`
-	Content         string            `json:"content"`
-	MarkdownContent string            `json:"markdown_content,omitempty"`
-	CookieExpired   bool              `json:"cookie_expired,omitempty"`
-	DegradedReason  string            `json:"degraded_reason,omitempty"`
-	FallbackErrors  []FallbackAttempt `json:"fallback_errors,omitempty"`
-	Extraction      *Extraction       `json:"extraction,omitempty"`
-	Type            string            `json:"type"`
-	Media           []Media           `json:"media"`
-	Headers         map[string]string `json:"headers,omitempty"`
+	Platform            string            `json:"platform"`
+	SourceURL           string            `json:"source_url"`
+	CanonicalURL        string            `json:"canonical_url,omitempty"`
+	CoverURL            string            `json:"cover_url,omitempty"`
+	Title               string            `json:"title"`
+	Author              string            `json:"author,omitempty"`
+	Tags                []string          `json:"tags,omitempty"`
+	Content             string            `json:"content"`
+	MarkdownContent     string            `json:"markdown_content,omitempty"`
+	CookieExpired       bool              `json:"cookie_expired,omitempty"`
+	DegradedReason      string            `json:"degraded_reason,omitempty"`
+	DegradedMaxDuration int               `json:"degraded_max_duration,omitempty"`
+	DegradedMaxBytes    int64             `json:"degraded_max_bytes,omitempty"`
+	FallbackErrors      []FallbackAttempt `json:"fallback_errors,omitempty"`
+	Extraction          *Extraction       `json:"extraction,omitempty"`
+	Type                string            `json:"type"`
+	Media               []Media           `json:"media"`
+	Headers             map[string]string `json:"headers,omitempty"`
 }
 type Artifact struct {
 	Kind      string  `json:"kind"`

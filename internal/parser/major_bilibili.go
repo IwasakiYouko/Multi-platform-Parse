@@ -164,6 +164,9 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 			return nil, fmt.Errorf("哔哩哔哩 cid 不属于此视频")
 		}
 	}
+	if sp := int(Number(selected["page"])); sp >= 1 {
+		p = sp
+	}
 	cid := Text(selected["cid"])
 	if cid == "" {
 		return nil, fmt.Errorf("哔哩哔哩视频缺少 cid")
@@ -208,11 +211,19 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	canonical := raw
 	if bv := Text(view["bvid"]); majorBiliBV.FindString(bv) == bv && bv != "" {
 		canonical = "https://www.bilibili.com/video/" + bv
+	} else if reqBV := query.Get("bvid"); reqBV != "" {
+		canonical = "https://www.bilibili.com/video/" + reqBV
 	} else if aid := query.Get("aid"); aid != "" {
 		canonical = "https://www.bilibili.com/video/av" + aid
 	}
-	if p > 1 {
-		canonical += "?p=" + strconv.Itoa(p)
+	if cu, parseErr := url.Parse(canonical); parseErr == nil {
+		cq := url.Values{}
+		if p > 1 {
+			cq.Set("p", strconv.Itoa(p))
+		}
+		cu.RawQuery = cq.Encode()
+		cu.Fragment = ""
+		canonical = cu.String()
 	}
 	var tags []string
 	for _, field := range []string{"tname_v2", "tname"} {

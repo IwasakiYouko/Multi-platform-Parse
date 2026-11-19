@@ -24,7 +24,7 @@ func cooldownKeyFor(target model.Target, raw string) string {
 	if target.GroupID == 0 {
 		scope = fmt.Sprintf("%s/private/%d", target.BotID, target.UserID)
 	}
-	normalized := policy.CleanTrackingURL(raw)
+	normalized := policy.WorkIdentityURL(raw)
 	if normalized == "" {
 		normalized = raw
 	}
@@ -71,11 +71,14 @@ func (s *Service) bindCanonicalCooldown(target model.Target, canonicalURL, initi
 	if previous, ok := s.cooldowns[key]; ok && previous.taskID != id && (previous.finished.IsZero() || now.Before(previous.finished.Add(ttl))) {
 		return "", errors.New("相同作品正在处理或处于会话冷却期")
 	}
-	if len(s.cooldowns) < 4096 {
-		s.cooldowns[key] = cooldownEntry{taskID: id}
-		return key, nil
+	if len(s.cooldowns) >= 2048 {
+		s.pruneCooldownsLocked(now, ttl)
 	}
-	return "", nil
+	if len(s.cooldowns) >= 4096 {
+		return "", errors.New("会话限流记录已满，请稍后重试")
+	}
+	s.cooldowns[key] = cooldownEntry{taskID: id}
+	return key, nil
 }
 
 func (s *Service) settleCooldown(key, id string, success bool) {

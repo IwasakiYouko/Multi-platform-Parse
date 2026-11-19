@@ -274,8 +274,9 @@
     const rawTags = limitedTags.length ? limitedTags.join(' · ') : '';
 
     const sumLimit = state.draft && state.draft.media ? Number(state.draft.media.summary_length || 0) : 300;
-    if (sumLimit > 0 && rawContent.length > sumLimit) {
-      rawContent = `${rawContent.slice(0, sumLimit)}…`;
+    const effectiveSumLimit = (sumLimit > 0 && sumLimit <= 8000) ? sumLimit : 8000;
+    if (rawContent.length > effectiveSumLimit) {
+      rawContent = `${rawContent.slice(0, effectiveSumLimit)}…`;
     }
 
     const values = {
@@ -592,6 +593,12 @@
     }
   }
 
+  function renderCookieAlertBanner(alerts) {
+    const list = Array.isArray(alerts) ? alerts : [];
+    if (list.length === 0) return '';
+    return `<div class="alert alert-warn">⚠️ 平台 Cookie 失效提醒：<strong>${list.map((a) => esc(platformName(a.platform))).join('、')}</strong> 的已存登录凭据疑似过期并已回退至游客通道，请前往「平台与消息模板」更新 Cookie。</div>`;
+  }
+
   function updateOverviewKPIsOnly() {
     const s = state.status || {};
     const elUptime = document.getElementById('kpi-uptime');
@@ -604,6 +611,8 @@
     if (elTasks) elTasks.textContent = `${s.active_tasks || 0} / ${s.queue_size || 0}`;
     const elCache = document.getElementById('kpi-cache');
     if (elCache) elCache.textContent = formatBytes(s.cache_bytes || 0);
+    const elCookieBanner = document.getElementById('overview-cookie-banner');
+    if (elCookieBanner) elCookieBanner.innerHTML = renderCookieAlertBanner(s.cookie_alerts);
   }
 
   function cookieAlertFor(platformId) {
@@ -690,13 +699,11 @@
           </tr>
         `).join('');
 
-    const cookieBanner = cookieAlerts.length > 0
-      ? `<div class="alert alert-warn">⚠️ 平台 Cookie 失效提醒：<strong>${cookieAlerts.map((a) => esc(platformName(a.platform))).join('、')}</strong> 的已存登录凭据疑似过期并已回退至游客通道，请前往「平台与消息模板」更新 Cookie。</div>`
-      : '';
+    const cookieBanner = renderCookieAlertBanner(cookieAlerts);
 
     return `
       ${s.cleanup_error ? `<div class="alert alert-warn">缓存清理提示：${esc(s.cleanup_error)}</div>` : ''}
-      ${cookieBanner}
+      <div id="overview-cookie-banner">${cookieBanner}</div>
       <section class="kpi-grid">
         <div class="kpi-card">
           <span class="kpi-label">引擎运行时长</span>
@@ -1124,17 +1131,22 @@
       ? ''
       : (mode === 'custom' ? (pol.message_template || '') : (state.draft.media.show_info ? (state.draft.media.message_template || DEFAULT_TEMPLATE) : ''));
 
+    const primaryType = (meta.types && meta.types[0]) || 'video';
+    const isAlbumSample = primaryType === 'image' || primaryType === 'livephoto';
     const sample = {
       platform_name: meta.name,
-      type_label: typeName((meta.types && meta.types[0]) || 'video'),
+      type_label: typeName(primaryType),
       title: `${meta.name}示例作品标题`,
       author: '示例创作者',
       content: `${meta.name}正文内容摘要，支持任意组合标题、作者、统计与自定义文字。`,
       url: `https://${(meta.domains && meta.domains[0]) || 'example.com'}/post/10086?utm_source=share`,
       clean_url: `https://${(meta.domains && meta.domains[0]) || 'example.com'}/post/10086`,
-      media_stats: '共 1 个视频',
+      media_stats: isAlbumSample ? '共 3 张图片' : '共 1 个视频',
     };
     const previewText = renderLocalPreview(effectiveTpl, sample, state.draft.media.clean_url);
+    const drawerMsg2Mode = !state.draft.media.auto_download
+      ? 'none'
+      : (isAlbumSample ? (state.draft.media.forward_enabled !== false ? 'merged_forward' : 'sequential') : 'direct_video');
 
     const presetBtns = TEMPLATE_PRESETS.map((pr) =>
       `<button type="button" class="btn btn-secondary btn-xs" data-action="apply-drawer-preset" data-preset="${esc(pr.value)}">${esc(pr.name)}</button>`
@@ -1221,7 +1233,7 @@
           <span>${mode === 'inherit' ? '继承全局' : (mode === 'custom' ? '专属定制' : '无文本模式')}</span>
         </div>
         <div id="drawer-live-preview" class="chat-bubble"><div class="chat-msg-tag">消息 1 · 作品导览名片</div>${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${effectiveShowCover ? '<div class="chat-cover-mock">🖼️ [无水印封面预览]</div>\n' : ''}${previewText ? esc(previewText) : '<span class="muted">（仅发送图片/视频媒体，不附带文本消息块）</span>'}</div>
-        ${renderMsg2Mock(state.draft.media.forward_enabled !== false ? 'merged_forward' : 'direct_video', 3, meta.name, '示例创作者', false)}
+        ${renderMsg2Mock(drawerMsg2Mode, isAlbumSample ? 3 : 1, meta.name, '示例创作者', false)}
       </div>
 
       <label class="field">
@@ -2391,6 +2403,25 @@
         if (!Number.isNaN(n)) {
           setNestedValue(state.draft, el.dataset.bindNum, Math.trunc(n));
           updateDirtyBar();
+          if (el.dataset.bindNum === 'media.summary_length' || el.dataset.bindNum === 'media.max_tags') {
+            const previewEl = $('global-template-preview');
+            if (previewEl) {
+              const sample = {
+                platform_name: '哔哩哔哩',
+                type_label: '视频',
+                title: '【4K】2026 年度技术架构演进与工程实践总结',
+                author: '技术极客UP',
+                content: '本期视频深入讲解多平台消息块自定义排版、Alpine 镜像瘦身与高可靠媒体流水线。',
+                url: 'https://www.bilibili.com/video/BV1GJ411x7h7?p=1&vd_source=track123',
+                clean_url: 'https://www.bilibili.com/video/BV1GJ411x7h7?p=1',
+                media_stats: '共 1 个视频',
+              };
+              const txt = state.draft.media.show_info
+                ? renderLocalPreview(state.draft.media.message_template || DEFAULT_TEMPLATE, sample, state.draft.media.clean_url)
+                : '';
+              previewEl.innerHTML = `<div class="chat-msg-tag">消息 1 · 作品导览名片</div>${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${state.draft.media.show_cover ? '<div class="chat-cover-mock">🖼️ [高清无水印封面图]</div>\n' : ''}${txt ? esc(txt) : '<span class="muted">（已关闭全局文本信息输出）</span>'}`;
+            }
+          }
         }
         return;
       }
