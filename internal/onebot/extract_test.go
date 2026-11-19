@@ -116,3 +116,32 @@ func TestExtractBounds(t *testing.T) {
 		t.Fatalf("nesting limit not applied: %#v", got)
 	}
 }
+
+func TestExtractIgnoresNoParseMarkersMergedForwardAndCardIcons(t *testing.T) {
+	for _, marker := range []string{
+		"-np https://b23.tv/abc",
+		"不解析 https://b23.tv/abc",
+		"/help https://b23.tv/abc",
+		"先看这个 [不解析] https://b23.tv/abc",
+		"[CQ:at,qq=12345] -np https://b23.tv/abc",
+		"[CQ:reply,id=99][CQ:at,qq=12345] 不解析 https://b23.tv/abc",
+	} {
+		ev := model.Event{Segments: []model.Segment{{Type: "text", Data: map[string]any{"text": marker}}}}
+		if got := Extract(ev); len(got) != 0 {
+			t.Fatalf("marker %q did not suppress extraction: %#v", marker, got)
+		}
+	}
+	fwdCard := model.Event{Segments: []model.Segment{{Type: "json", Data: map[string]any{
+		"app":  "com.tencent.multimsg",
+		"meta": map[string]any{"detail": map[string]any{"news": []any{map[string]any{"text": "https://b23.tv/inside-forward"}}}},
+	}}}}
+	if got := Extract(fwdCard); len(got) != 0 {
+		t.Fatalf("merged forward card triggered recursive extraction: %#v", got)
+	}
+	iconAndRoot := model.Event{Segments: []model.Segment{{Type: "text", Data: map[string]any{
+		"text": "https://www.bilibili.com/ https://www.xiaohongshu.com/login https://i0.hdslb.com/bfs/face/avatar.png https://www.bilibili.com/video/BV1xx411c7mD",
+	}}}}
+	if got := Extract(iconAndRoot); !reflect.DeepEqual(got, []string{"https://www.bilibili.com/video/BV1xx411c7mD"}) {
+		t.Fatalf("root/login/icon URLs not filtered: %#v", got)
+	}
+}

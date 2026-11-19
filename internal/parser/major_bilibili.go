@@ -83,6 +83,7 @@ func majorBilibili(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 		}
 		r.Platform = "bilibili"
 		r.SourceURL = source
+		r.CanonicalURL = raw
 		r.Type = "article"
 		return r, nil
 	}
@@ -96,6 +97,7 @@ func majorBilibili(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 			return nil, e
 		}
 		r.SourceURL = source
+		r.CanonicalURL = "https://www.bilibili.com/opus/" + match[1]
 		return r, nil
 	}
 	r, e := majorBiliVideo(ctx, c, raw, cookie)
@@ -162,6 +164,9 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 			return nil, fmt.Errorf("哔哩哔哩 cid 不属于此视频")
 		}
 	}
+	if sp := int(Number(selected["page"])); sp >= 1 {
+		p = sp
+	}
 	cid := Text(selected["cid"])
 	if cid == "" {
 		return nil, fmt.Errorf("哔哩哔哩视频缺少 cid")
@@ -188,9 +193,12 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	playQuery.Set("fnval", "4048")
 	playQuery.Set("fnver", "0")
 	playQuery.Set("fourk", "1")
+	hadSessData := majorCookie(cookie, "SESSDATA") != ""
+	cookieExpired := false
 	play, err := majorBiliAPI(ctx, c, "https://api.bilibili.com/x/player/playurl?"+playQuery.Encode(), cookie, raw)
 	if (err != nil || !majorBiliHasPlayableStream(play)) && ctx.Err() == nil {
-		wbiPlay, wbiErr := majorBiliWBI(ctx, c, playQuery, cookie, raw)
+		wbiPlay, expired, wbiErr := majorBiliWBI(ctx, c, playQuery, cookie, raw)
+		cookieExpired = expired && hadSessData
 		if wbiErr == nil && (majorBiliHasPlayableStream(wbiPlay) || err != nil) {
 			play, err = wbiPlay, nil
 		} else if err != nil && wbiErr != nil && wbiErr.Error() != err.Error() {
@@ -200,16 +208,42 @@ func majorBiliVideo(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	if err != nil {
 		return nil, err
 	}
-	r := &model.ParseResult{Platform: "bilibili", SourceURL: raw, Type: "video", Title: Text(view["title"]), Content: Text(view["desc"]), Author: Text(Path(view, "owner", "name")), Headers: majorMediaHeaders("https://www.bilibili.com/")}
+	canonical := raw
+	if bv := Text(view["bvid"]); majorBiliBV.FindString(bv) == bv && bv != "" {
+		canonical = "https://www.bilibili.com/video/" + bv
+	} else if reqBV := query.Get("bvid"); reqBV != "" {
+		canonical = "https://www.bilibili.com/video/" + reqBV
+	} else if aid := query.Get("aid"); aid != "" {
+		canonical = "https://www.bilibili.com/video/av" + aid
+	}
+	if cu, parseErr := url.Parse(canonical); parseErr == nil {
+		cq := url.Values{}
+		if p > 1 {
+			cq.Set("p", strconv.Itoa(p))
+		}
+		cu.RawQuery = cq.Encode()
+		cu.Fragment = ""
+		canonical = cu.String()
+	}
+	var tags []string
+	for _, field := range []string{"tname_v2", "tname"} {
+		if t := strings.TrimSpace(Text(view[field])); t != "" && !slices.Contains(tags, t) {
+			tags = append(tags, t)
+		}
+	}
+	cover := majorURL(view["pic"])
+	r := &model.ParseResult{Platform: "bilibili", SourceURL: raw, CanonicalURL: canonical, CoverURL: cover, Tags: tags, CookieExpired: cookieExpired, Type: "video", Title: Text(view["title"]), Content: Text(view["desc"]), Author: Text(Path(view, "owner", "name")), Headers: majorMediaHeaders("https://www.bilibili.com/")}
 	if r.Content == "-" {
 		r.Content = ""
 	}
 	if len(pages) > 1 {
-		if part := Text(selected["part"]); part != "" {
-			r.Title += " - " + part
+		if part := strings.TrimSpace(Text(selected["part"])); part != "" && part != r.Title {
+			r.Title = fmt.Sprintf("%s · P%d %s (%d/%d)", r.Title, p, part, p, len(pages))
+		} else {
+			r.Title = fmt.Sprintf("%s (P%d/%d)", r.Title, p, len(pages))
 		}
 	}
-	base := model.Media{Kind: "video", ThumbnailURL: majorURL(view["pic"]), Duration: Number(selected["duration"]), Width: int(Number(Path(selected, "dimension", "width"))), Height: int(Number(Path(selected, "dimension", "height"))), Headers: r.Headers}
+	base := model.Media{Kind: "video", ThumbnailURL: cover, Duration: Number(selected["duration"]), Width: int(Number(Path(selected, "dimension", "width"))), Height: int(Number(Path(selected, "dimension", "height"))), Headers: r.Headers}
 	dash := Obj(play["dash"])
 	if len(dash) > 0 {
 		video := majorBiliTrack(Array(dash["video"]), true)
@@ -314,22 +348,24 @@ func majorBiliSignWBI(params url.Values, mixinKey string, wts int64) string {
 	wRid := hex.EncodeToString(sum[:])
 	return encodedQuery + "&w_rid=" + wRid
 }
-func majorBiliWBI(ctx context.Context, c *http.Client, playQuery url.Values, cookie, referer string) (map[string]any, error) {
+func majorBiliWBI(ctx context.Context, c *http.Client, playQuery url.Values, cookie, referer string) (map[string]any, bool, error) {
 	const navEndpoint = "https://api.bilibili.com/x/web-interface/nav"
 	var nav map[string]any
 	if err := JSON(ctx, c, navEndpoint, majorHeaders(cookie, referer, navEndpoint, "bilibili.com"), &nav); err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	expired := Number(nav["code"]) == -101 || Path(nav, "data", "isLogin") == false
 	wbiImg := Obj(Path(nav, "data", "wbi_img"))
 	mixinKey, err := majorBiliWBIMixinKey(Text(wbiImg["img_url"]), Text(wbiImg["sub_url"]))
 	if err != nil {
 		if code := Number(nav["code"]); code != 0 && code != -101 {
-			return nil, fmt.Errorf("哔哩哔哩: code %.0f %s", code, Text(nav["message"]))
+			return nil, expired, fmt.Errorf("哔哩哔哩: code %.0f %s", code, Text(nav["message"]))
 		}
-		return nil, err
+		return nil, expired, err
 	}
 	signedQuery := majorBiliSignWBI(playQuery, mixinKey, time.Now().Unix())
-	return majorBiliAPI(ctx, c, "https://api.bilibili.com/x/player/wbi/playurl?"+signedQuery, cookie, referer)
+	play, err := majorBiliAPI(ctx, c, "https://api.bilibili.com/x/player/wbi/playurl?"+signedQuery, cookie, referer)
+	return play, expired, err
 }
 func majorBiliTrack(tracks []any, video bool) map[string]any {
 	var best map[string]any
@@ -371,6 +407,9 @@ func majorBiliDynamic(ctx context.Context, c *http.Client, id, raw, cookie strin
 	}
 	item := Obj(data["item"])
 	r := &model.ParseResult{Platform: "bilibili", SourceURL: raw, Author: Text(Path(item, "modules", "module_author", "name")), Content: Text(Path(item, "modules", "module_dynamic", "desc", "text")), Headers: majorMediaHeaders("https://www.bilibili.com/")}
+	if topic := strings.TrimSpace(Text(Path(item, "modules", "module_dynamic", "topic", "name"))); topic != "" {
+		r.Tags = append(r.Tags, topic)
+	}
 	major := Obj(Path(item, "modules", "module_dynamic", "major"))
 	opus := Obj(major["opus"])
 	r.Title = Text(opus["title"])

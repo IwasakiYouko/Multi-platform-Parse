@@ -50,28 +50,32 @@ func TestParseHubLivePhotoRealACKPairAndSignedLocations(t *testing.T) {
 			entry.Result.MarkdownContent = "## Heading\n\n[linked text](https://example.org/article)"
 			result, _ := x.start(t, &entry)
 			initial := x.next(t)
-			deliveryTypes(t, initial, "image,image,image,text")
+			deliveryTypes(t, initial, "image,text")
 			x.location(t, initial.Params.Message[0].Data["file"], entry.Files[0].Path)
-			x.location(t, initial.Params.Message[1].Data["file"], entry.Files[2].Path)
-			x.location(t, initial.Params.Message[2].Data["file"], entry.Files[3].ThumbPath)
-			text := initial.Params.Message[3].Data["text"].(string)
+			text := initial.Params.Message[1].Data["text"].(string)
 			if !strings.Contains(text, entry.Result.MarkdownContent) || strings.Contains(text, "\ncontent\n") {
 				t.Fatalf("semantic Markdown lost: %q", text)
 			}
 			x.none(t)
 			x.ack(t, initial, 0)
-			for _, f := range []model.Artifact{entry.Files[0], entry.Files[3]} {
-				video := x.next(t)
-				deliveryTypes(t, video, "video")
-				path := f.Path
-				if f.Kind == "livephoto" {
-					path = f.VideoPath
-				}
-				x.location(t, video.Params.Message[0].Data["file"], path)
-				x.location(t, video.Params.Message[0].Data["thumb"], f.ThumbPath)
-				x.none(t)
-				x.ack(t, video, 0)
+
+			// Message 2: Merged forward containing deduplicated photo + motion + gif + native video (4 nodes)
+			fwd := x.next(t)
+			if fwd.Action != "send_group_forward_msg" || len(fwd.Params.Messages) != 4 {
+				t.Fatalf("expected 4-node forward, got action=%q len=%d", fwd.Action, len(fwd.Params.Messages))
 			}
+			n0 := forwardNodeSegment(t, fwd.Params.Messages[0])
+			n1 := forwardNodeSegment(t, fwd.Params.Messages[1])
+			n2 := forwardNodeSegment(t, fwd.Params.Messages[2])
+			n3 := forwardNodeSegment(t, fwd.Params.Messages[3])
+			x.location(t, n0.Data["file"], entry.Files[0].Path)
+			x.location(t, n1.Data["file"], entry.Files[0].VideoPath)
+			x.location(t, n1.Data["thumb"], entry.Files[0].ThumbPath)
+			x.location(t, n2.Data["file"], entry.Files[2].Path)
+			x.location(t, n3.Data["file"], entry.Files[3].Path)
+			x.location(t, n3.Data["thumb"], entry.Files[3].ThumbPath)
+			x.ack(t, fwd, 0)
+
 			if err := deliveryResult(t, result); err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +85,7 @@ func TestParseHubLivePhotoRealACKPairAndSignedLocations(t *testing.T) {
 }
 
 func TestParseHubLivePhotoFailureNeverReplaysOrSendsNext(t *testing.T) {
-	for _, stage := range []string{"initial", "video"} {
+	for _, stage := range []string{"initial", "forward"} {
 		t.Run(stage, func(t *testing.T) {
 			x := newDeliveryHarness(t, "http")
 			entry := parseHubDeliveryEntry(t, x,
@@ -90,8 +94,14 @@ func TestParseHubLivePhotoFailureNeverReplaysOrSendsNext(t *testing.T) {
 			result, _ := x.start(t, &entry)
 			action := x.next(t)
 			deliveryTypes(t, action, "image,text")
-			if stage == "video" {
+			if stage == "forward" {
 				x.ack(t, action, 0)
+				action = x.next(t)
+				if action.Action != "send_group_forward_msg" {
+					t.Fatalf("expected send_group_forward_msg, got %q", action.Action)
+				}
+				// Reject mixed forward -> triggers fallback to standalone videos (since single image == coverPath), reject first video too.
+				x.ack(t, action, 100)
 				action = x.next(t)
 				deliveryTypes(t, action, "video")
 			}
@@ -117,19 +127,29 @@ func TestParseHubLivePhotoDisplaySwitches(t *testing.T) {
 				}
 				entry := parseHubDeliveryEntry(t, x, model.Artifact{Kind: "livephoto", Path: "photo.jpg", VideoPath: "motion.mp4", ThumbPath: "motion-thumb.jpg", Size: 10, VideoSize: 20})
 				result, _ := x.start(t, &entry)
-				initial := x.next(t)
-				want := "image"
-				if showInfo {
-					want += ",text"
+				var parts []string
+				if showCover {
+					parts = append(parts, "image")
 				}
-				deliveryTypes(t, initial, want)
-				x.location(t, initial.Params.Message[0].Data["file"], entry.Files[0].Path)
-				x.none(t)
-				x.ack(t, initial, 0)
-				video := x.next(t)
-				deliveryTypes(t, video, "video")
-				x.location(t, video.Params.Message[0].Data["thumb"], entry.Files[0].ThumbPath)
-				x.ack(t, video, 0)
+				if showInfo {
+					parts = append(parts, "text")
+				}
+				if len(parts) > 0 {
+					initial := x.next(t)
+					deliveryTypes(t, initial, strings.Join(parts, ","))
+					if showCover {
+						x.location(t, initial.Params.Message[0].Data["file"], entry.Files[0].Path)
+					}
+					x.none(t)
+					x.ack(t, initial, 0)
+				}
+				fwd := x.next(t)
+				if fwd.Action != "send_group_forward_msg" || len(fwd.Params.Messages) != 2 {
+					t.Fatalf("expected 2-node livephoto forward, got %+v", fwd)
+				}
+				vidSeg := forwardNodeSegment(t, fwd.Params.Messages[1])
+				x.location(t, vidSeg.Data["thumb"], entry.Files[0].ThumbPath)
+				x.ack(t, fwd, 0)
 				if err := deliveryResult(t, result); err != nil {
 					t.Fatal(err)
 				}
@@ -275,9 +295,11 @@ func TestParseHubLivePhotoLeaseCleanupWhitelistAndMissingCompanion(t *testing.T)
 		}
 	}
 	x.ack(t, initial, 0)
-	video := x.next(t)
-	deliveryTypes(t, video, "video")
-	x.ack(t, video, 0)
+	fwd := x.next(t)
+	if fwd.Action != "send_group_forward_msg" {
+		t.Fatalf("expected send_group_forward_msg, got %q", fwd.Action)
+	}
+	x.ack(t, fwd, 0)
 	if err := deliveryResult(t, result); err != nil {
 		t.Fatal(err)
 	}

@@ -118,6 +118,7 @@ func Open(dataDir string) (*Store, error) {
 			return fail(fmt.Errorf("decrypt configuration: %w", e))
 		}
 		s.cfg = model.DefaultConfig()
+		s.cfg.SchemaVersion = 0
 		if e = json.Unmarshal(plain, &s.cfg); e != nil {
 			return fail(e)
 		}

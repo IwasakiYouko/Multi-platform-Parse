@@ -683,10 +683,30 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 		}
 		kind = "video"
 		width, height = v.Width, v.Height
-		thumbArgs := append(inputOptions(output), "-i", output, "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=w=640:h=640:force_original_aspect_ratio=decrease", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe")
-		thumbnail, err = p.ffmpeg(ctx, thumbArgs, ".jpg", 4<<20)
-		if err != nil {
-			return empty, fmt.Errorf("生成视频封面失败: %w", err)
+		if remote && item.ThumbnailURL != "" {
+			cover, coverErr := p.optionalExtractionCover(ctx, item.ThumbnailURL, headers)
+			if coverErr != nil {
+				if coverErr != errMediaDiskLimit {
+					return empty, coverErr
+				}
+			} else {
+				thumbnail = cover.Path
+			}
+		}
+		if thumbnail != "" {
+			if compatibleVideo {
+				// Stream-copied videos bypassed full decode; verify at least one decodable frame exists.
+				if err = p.verifyVideoFrame(ctx, output); err != nil {
+					_ = p.discard(thumbnail)
+					return empty, fmt.Errorf("生成视频封面失败: %w", err)
+				}
+			}
+		} else {
+			thumbArgs := append(inputOptions(output), "-i", output, "-map", "0:v:0", "-frames:v", "1", "-vf", "scale=w=640:h=640:force_original_aspect_ratio=decrease", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe")
+			thumbnail, err = p.ffmpeg(ctx, thumbArgs, ".jpg", 4<<20)
+			if err != nil {
+				return empty, fmt.Errorf("生成视频封面失败: %w", err)
+			}
 		}
 	}
 	if a := info.audio(); a != nil && a.CodecName != "aac" {
@@ -699,4 +719,33 @@ func (p *preparation) prepareDownloaded(ctx context.Context, item model.Media, i
 		kind = "file"
 	}
 	return model.Artifact{Kind: kind, Path: output, ThumbPath: thumbnail, Size: stat.Size(), Duration: duration, Width: width, Height: height}, nil
+}
+
+func (p *preparation) verifyVideoFrame(ctx context.Context, path string) error {
+	release, err := p.manager.acquire(ctx, true, p.cfg.Media.TranscodeConcurrency)
+	if err != nil {
+		return err
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "2"}
+	args = append(args, inputOptions(path)...)
+	args = append(args, "-i", path, "-map", "0:v:0", "-frames:v", "1", "-f", "null", "-")
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd.Env = processEnv()
+	stderr := &cappedBuffer{limit: 8 << 10}
+	cmd.Stdout = io.Discard
+	cmd.Stderr = stderr
+	if err = cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(err, exec.ErrNotFound) {
+			return permanentError(errors.New("未安装ffmpeg"))
+		}
+		slog.Warn("ffmpeg首帧校验失败", "ext", filepath.Ext(path), "err", err, "stderr", p.sanitizeStderr(stderr.String()))
+		return errors.New("ffmpeg媒体处理失败")
+	}
+	return nil
 }

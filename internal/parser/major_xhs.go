@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 
 	"multiparse/internal/model"
@@ -36,7 +37,7 @@ func majorXHS(ctx context.Context, c *http.Client, raw, cookie string) (*model.P
 	}
 	id := majorXHSID(raw)
 	extract := func(cookie string, mobile bool) (*model.ParseResult, error) {
-		// Preserve signed xsec_token and xsec_source parameters unchanged.
+		// Preserve signed xsec_token and xsec_source parameters unchanged during upstream request.
 		requestCtx := ctx
 		if mobile {
 			requestCtx = netx.WithoutCookies(ctx)
@@ -64,10 +65,12 @@ func majorXHS(ctx context.Context, c *http.Client, raw, cookie string) (*model.P
 			return nil, err
 		}
 		r.SourceURL = source
+		r.CanonicalURL = final
 		return r, nil
 	}
+	hasCookie := strings.TrimSpace(cookie) != ""
 	var stages []referenceStage
-	if strings.TrimSpace(cookie) != "" {
+	if hasCookie {
 		stages = append(stages, referenceStage{Name: "cookie", Run: func() (*model.ParseResult, error) { return extract(cookie, false) }})
 	}
 	stages = append(stages, referenceStage{Name: "游客 session", Run: func() (*model.ParseResult, error) {
@@ -77,7 +80,11 @@ func majorXHS(ctx context.Context, c *http.Client, raw, cookie string) (*model.P
 		}
 		return extract(session, false)
 	}}, referenceStage{Name: "移动端", Run: func() (*model.ParseResult, error) { return extract("", true) }})
-	return referenceFallback(stages, false)
+	r, err := referenceFallback(stages, false)
+	if err == nil && r != nil && hasCookie && len(r.FallbackErrors) > 0 && r.FallbackErrors[0].Name == "cookie" && isCookieAuthError(r.FallbackErrors[0].Error) {
+		r.CookieExpired = true
+	}
+	return r, err
 }
 
 func majorXHSHeaders(cookie, raw string, mobile bool) map[string]string {
@@ -146,23 +153,114 @@ func majorXHSRequestedNote(state any, id string) (map[string]any, error) {
 	return note, nil
 }
 
-func majorXHSStream(v any) map[string]any {
-	for _, codec := range []string{"h264", "av1", "h265", "h266"} {
-		streams := Array(Obj(v)[codec])
-		if len(streams) > 0 {
-			stream := Obj(streams[0])
-			if majorURL(stream["masterUrl"]) != "" {
-				return stream
+type xhsStreamCandidate struct {
+	stream    map[string]any
+	url       string
+	backups   []string
+	pixels    int64
+	bitrate   float64
+	codecRank int
+}
+
+// majorXHSBestStream selects the highest-resolution / highest-bitrate stream across codecs
+// and collects backup URLs in descending quality order.
+func majorXHSBestStream(v any) (map[string]any, []string) {
+	container := Obj(v)
+	var candidates []xhsStreamCandidate
+	for codecIdx, codec := range []string{"h264", "h265", "av1", "h266"} {
+		for _, raw := range Array(container[codec]) {
+			s := Obj(raw)
+			u := majorURL(s["masterUrl"])
+			if u == "" {
+				continue
 			}
-			return nil
+			w, h := int64(Number(s["width"])), int64(Number(s["height"]))
+			br := Number(s["videoBitrate"])
+			if br == 0 {
+				br = Number(s["size"])
+			}
+			candidates = append(candidates, xhsStreamCandidate{
+				stream:    s,
+				url:       u,
+				backups:   majorURLs(s["backupUrls"]),
+				pixels:    w * h,
+				bitrate:   br,
+				codecRank: len(candidates) + codecIdx*100,
+			})
 		}
 	}
-	return nil
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].pixels != candidates[j].pixels {
+			return candidates[i].pixels > candidates[j].pixels
+		}
+		if candidates[i].bitrate != candidates[j].bitrate {
+			return candidates[i].bitrate > candidates[j].bitrate
+		}
+		return candidates[i].codecRank < candidates[j].codecRank
+	})
+	best := candidates[0]
+	var backups []string
+	seen := map[string]bool{best.url: true}
+	addBackup := func(u string) {
+		if u != "" && !seen[u] && len(backups) < 8 {
+			seen[u] = true
+			backups = append(backups, u)
+		}
+	}
+	for _, b := range best.backups {
+		addBackup(b)
+	}
+	for _, c := range candidates[1:] {
+		addBackup(c.url)
+		for _, b := range c.backups {
+			addBackup(b)
+		}
+	}
+	return best.stream, backups
 }
+
+func majorXHSOriginVideoURLs(originKey string, fallbackURL string, fallbackBackups []string) (string, []string) {
+	key := strings.TrimLeft(strings.TrimSpace(originKey), "/")
+	if key == "" || strings.Contains(key, "..") || strings.ContainsAny(key, " \t\r\n?#") {
+		return fallbackURL, fallbackBackups
+	}
+	primary := "https://sns-video-bd.xhscdn.com/" + key
+	seen := map[string]bool{primary: true}
+	var backups []string
+	add := func(u string) {
+		if u != "" && !seen[u] && len(backups) < 8 {
+			seen[u] = true
+			backups = append(backups, u)
+		}
+	}
+	add("https://sns-video-hw.xhscdn.com/" + key)
+	add("https://sns-video-al.xhscdn.com/" + key)
+	add(fallbackURL)
+	for _, b := range fallbackBackups {
+		add(b)
+	}
+	return primary, backups
+}
+
 func majorXHSImage(v any) string {
 	image := Obj(v)
-	return majorFirstText(majorURL(image["urlDefault"]), majorURL(image["url"]))
+	if u := majorFirstText(majorURL(image["urlDefault"]), majorURL(image["url"])); u != "" {
+		return u
+	}
+	for _, item := range Array(image["infoList"]) {
+		info := Obj(item)
+		if Text(info["imageScene"]) == "WB_DFT" {
+			if u := majorURL(info["url"]); u != "" {
+				return u
+			}
+		}
+	}
+	return ""
 }
+
 func majorXHSImageThumb(v any) string {
 	image := Obj(v)
 	if uri := majorURL(image["urlPre"]); uri != "" {
@@ -179,55 +277,176 @@ func majorXHSImageThumb(v any) string {
 	return majorXHSImage(v)
 }
 
-var majorXHSTrace = regexp.MustCompile(`/[a-f0-9]{32}/(.+)`)
-var majorXHSTopic = regexp.MustCompile(` ?#[^#\[\]]+\[话题\]# ?`)
+var (
+	majorXHSObjectKey = regexp.MustCompile(`(?:^|/)((?:notes_pre_post/|spectrum/)?1040g[^!/]+)$`)
+	majorXHSTrace     = regexp.MustCompile(`/[a-f0-9]{32}/(.+)`)
+	majorXHSTimestamp = regexp.MustCompile(`^/[0-9]{8,14}/(.+)`)
+	majorXHSTopic     = regexp.MustCompile(` ?#[^#\[\]]+\[话题\]# ?`)
+)
+
+func majorXHSExtractImageKey(image map[string]any, raw string) string {
+	traceID := strings.Trim(strings.TrimSpace(Text(image["traceId"])), "/")
+	if raw != "" && majorURL(raw) != "" {
+		if u, err := url.Parse(raw); err == nil {
+			cleanPath, _, _ := strings.Cut(u.EscapedPath(), "!")
+			if m := majorXHSObjectKey.FindStringSubmatch(cleanPath); len(m) > 1 {
+				return m[1]
+			}
+			if traceID != "" {
+				if strings.Contains(cleanPath, "/notes_pre_post/") && !strings.HasPrefix(traceID, "notes_pre_post/") {
+					return "notes_pre_post/" + traceID
+				}
+				if strings.Contains(cleanPath, "/spectrum/") && !strings.HasPrefix(traceID, "spectrum/") {
+					return "spectrum/" + traceID
+				}
+				return traceID
+			}
+			if m := majorXHSTrace.FindStringSubmatch(cleanPath); len(m) > 1 {
+				return m[1]
+			}
+			if m := majorXHSTimestamp.FindStringSubmatch(cleanPath); len(m) > 1 {
+				return strings.TrimLeft(m[1], "/")
+			}
+			return strings.TrimLeft(cleanPath, "/")
+		}
+	}
+	return traceID
+}
 
 func majorXHSRawImage(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || majorURL(raw) == "" {
-		return ""
-	}
-	trace, _, _ := strings.Cut(u.EscapedPath(), "!")
-	if m := majorXHSTrace.FindStringSubmatch(trace); len(m) > 1 {
-		trace = m[1]
-	} else {
-		trace = strings.TrimLeft(trace, "/")
-	}
-	if trace == "" {
-		return ""
-	}
-	return "https://sns-img-hw.xhscdn.com/" + trace + "?imageView2/format/jpg"
+	primary, _ := majorXHSRawImageURLs(nil, raw)
+	return primary
 }
+
+func majorXHSRawImageURLs(image map[string]any, raw string) (string, []string) {
+	if raw == "" && image != nil {
+		raw = majorXHSImage(image)
+	}
+	key := majorXHSExtractImageKey(image, raw)
+	if key == "" || strings.Contains(key, "..") {
+		return "", nil
+	}
+	primary := "https://ci.xiaohongshu.com/" + key + "?imageView2/2/w/format/png"
+	backups := []string{
+		"https://sns-img-bd.xhscdn.com/" + key + "?imageView2/2/w/format/png",
+		"https://sns-img-hw.xhscdn.com/" + key + "?imageView2/2/w/format/png",
+		"https://sns-img-al.xhscdn.com/" + key + "?imageView2/2/w/format/jpg",
+	}
+	if validRaw := majorURL(raw); validRaw != "" && validRaw != primary {
+		backups = append(backups, validRaw)
+	}
+	return primary, backups
+}
+
 func majorXHSParseNote(note map[string]any) (*model.ParseResult, error) {
-	desc := majorXHSTopic.ReplaceAllStringFunc(Text(note["desc"]), func(s string) string { return strings.ReplaceAll(strings.TrimSpace(s), "[话题]#", "") + " " })
-	r := &model.ParseResult{Platform: "xhs", Title: Text(note["title"]), Content: strings.TrimSpace(desc), Author: majorFirstText(Path(note, "user", "nickname"), Path(note, "user", "nickName")), Headers: majorMediaHeaders("https://www.xiaohongshu.com/")}
+	var tags []string
+	seenTags := map[string]bool{}
+	addTag := func(raw string) {
+		t := strings.TrimSpace(strings.Trim(strings.TrimSuffix(strings.TrimSpace(raw), "[话题]"), "#"))
+		if t == "" {
+			return
+		}
+		k := strings.ToLower(t)
+		if !seenTags[k] {
+			seenTags[k] = true
+			tags = append(tags, t)
+		}
+	}
+	for _, item := range Array(note["tagList"]) {
+		addTag(Text(Obj(item)["name"]))
+	}
+	rawDesc := Text(note["desc"])
+	for _, m := range majorXHSTopic.FindAllString(rawDesc, -1) {
+		addTag(strings.ReplaceAll(strings.TrimSpace(m), "[话题]#", ""))
+	}
+	desc := majorXHSTopic.ReplaceAllStringFunc(rawDesc, func(s string) string {
+		return strings.ReplaceAll(strings.TrimSpace(s), "[话题]#", "") + " "
+	})
+
+	r := &model.ParseResult{
+		Platform: "xhs",
+		Title:    Text(note["title"]),
+		Author:   majorFirstText(Path(note, "user", "nickname"), Path(note, "user", "nickName")),
+		Tags:     tags,
+		Content:  strings.TrimSpace(desc),
+		Headers:  majorMediaHeaders("https://www.xiaohongshu.com/"),
+	}
 	images := Array(note["imageList"])
 	switch Text(note["type"]) {
 	case "video":
-		stream := majorXHSStream(Path(note, "video", "media", "stream"))
-		if stream == nil {
+		stream, streamBackups := majorXHSBestStream(Path(note, "video", "media", "stream"))
+		originKey := majorFirstText(Path(note, "video", "consumer", "originVideoKey"), Path(note, "video", "originVideoKey"))
+		streamURL := ""
+		var width, height int
+		var duration float64
+		if stream != nil {
+			streamURL = majorURL(stream["masterUrl"])
+			width = int(Number(stream["width"]))
+			height = int(Number(stream["height"]))
+			duration = Number(stream["duration"]) / 1000
+		}
+		if duration == 0 {
+			duration = Number(Path(note, "video", "capa", "duration"))
+		}
+		videoURL, backups := majorXHSOriginVideoURLs(originKey, streamURL, streamBackups)
+		if videoURL == "" {
 			return nil, fmt.Errorf("小红书视频没有可用播放流")
 		}
 		if len(images) == 0 || majorXHSImage(images[0]) == "" {
 			return nil, fmt.Errorf("小红书视频缺少缩略图")
 		}
-		r.Media = []model.Media{{Kind: "video", URL: majorURL(stream["masterUrl"]), BackupURLs: majorURLs(stream["backupUrls"]), ThumbnailURL: majorXHSImage(images[0]), Width: int(Number(stream["width"])), Height: int(Number(stream["height"])), Duration: Number(stream["duration"]) / 1000, Headers: r.Headers}}
+		firstImg := Obj(images[0])
+		coverURL, _ := majorXHSRawImageURLs(firstImg, majorXHSImage(firstImg))
+		if coverURL == "" {
+			coverURL = majorXHSImage(firstImg)
+		}
+		r.CoverURL = coverURL
+		r.Media = []model.Media{{
+			Kind:         "video",
+			URL:          videoURL,
+			BackupURLs:   backups,
+			ThumbnailURL: coverURL,
+			Width:        width,
+			Height:       height,
+			Duration:     duration,
+			Headers:      r.Headers,
+		}}
 	case "normal":
 		for index, v := range images {
 			image := Obj(v)
-			uri := majorXHSRawImage(majorXHSImage(image))
+			uri, backups := majorXHSRawImageURLs(image, majorXHSImage(image))
 			if uri == "" {
 				return nil, fmt.Errorf("小红书第 %d 张图片缺少地址", index+1)
 			}
-			m := model.Media{Kind: "image", URL: uri, ThumbnailURL: majorXHSImageThumb(image), Width: int(Number(image["width"])), Height: int(Number(image["height"])), Headers: r.Headers}
+			if r.CoverURL == "" {
+				r.CoverURL = uri
+			}
+			m := model.Media{
+				Kind:         "image",
+				URL:          uri,
+				BackupURLs:   backups,
+				ThumbnailURL: majorXHSImageThumb(image),
+				Width:        int(Number(image["width"])),
+				Height:       int(Number(image["height"])),
+				Headers:      r.Headers,
+			}
 			if live, _ := image["livePhoto"].(bool); live {
-				stream := majorXHSStream(image["stream"])
-				if stream == nil {
+				stream, liveBackups := majorXHSBestStream(image["stream"])
+				liveOrigin := majorFirstText(Path(image, "originVideoKey"), Path(image, "video", "consumer", "originVideoKey"))
+				liveStreamURL := ""
+				var liveDuration float64
+				if stream != nil {
+					liveStreamURL = majorURL(stream["masterUrl"])
+					liveDuration = Number(stream["duration"]) / 1000
+				}
+				liveURL, liveVideoBackups := majorXHSOriginVideoURLs(liveOrigin, liveStreamURL, liveBackups)
+				if liveURL == "" {
 					continue
 				}
 				m.Kind = "livephoto"
-				m.VideoURL = majorURL(stream["masterUrl"])
-				m.Duration = Number(stream["duration"]) / 1000
+				m.VideoURL = liveURL
+				m.VideoBackupURLs = liveVideoBackups
+				m.Duration = liveDuration
 				m.ThumbnailURL = uri
 			}
 			r.Media = append(r.Media, m)

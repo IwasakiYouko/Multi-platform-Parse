@@ -25,17 +25,19 @@ import (
 )
 
 const (
-	maxConnections        = 64
-	maxPending            = 64
-	eventQueueSize        = 128
-	maxFrameBytes         = 1 << 20
-	writeTimeout          = 10 * time.Second
-	responseTimeout       = 30 * time.Second
-	uploadResponseTimeout = 5 * time.Minute
-	pongTimeout           = 90 * time.Second
-	pingInterval          = 25 * time.Second
-	dedupTTL              = 10 * time.Minute
-	maxDedupEntries       = 10000
+	maxConnections         = 64
+	maxPending             = 64
+	eventQueueSize         = 128
+	maxFrameBytes          = 4 << 20
+	writeTimeout           = 10 * time.Second
+	responseTimeout        = 30 * time.Second
+	forwardResponseTimeout = 3 * time.Minute
+	uploadResponseTimeout  = 5 * time.Minute
+	emojiResponseTimeout   = 5 * time.Second
+	pongTimeout            = 90 * time.Second
+	pingInterval           = 25 * time.Second
+	dedupTTL               = 10 * time.Minute
+	maxDedupEntries        = 10000
 )
 
 var (
@@ -347,6 +349,67 @@ func (h *Hub) Send(ctx context.Context, target model.Target, segments []model.Se
 	return c.call(ctx, action, params)
 }
 
+// SendForward sends a merged forward message (send_group_forward_msg / send_private_forward_msg)
+// using custom OneBot v11 / NapCat node segments.
+func (h *Hub) SendForward(ctx context.Context, target model.Target, nodes []model.ForwardNode) error {
+	if len(nodes) == 0 {
+		return errors.New("cannot send an empty forward message")
+	}
+	if len(nodes) > 200 {
+		return errors.New("too many forward nodes")
+	}
+	action, params, err := targetAction(target, "send_group_forward_msg", "send_private_forward_msg")
+	if err != nil {
+		return err
+	}
+	messages := make([]model.Segment, 0, len(nodes))
+	for _, node := range nodes {
+		if len(node.Content) == 0 || len(node.Content) > 200 {
+			return errors.New("invalid forward node content")
+		}
+		uid := node.UserID
+		if !validAccountID(uid) {
+			uid = target.BotID
+		}
+		name := strings.TrimSpace(node.Nickname)
+		if name == "" {
+			name = "解析助手"
+		}
+		messages = append(messages, model.Segment{
+			Type: "node",
+			Data: map[string]any{
+				"user_id":  uid,
+				"uin":      uid,
+				"nickname": name,
+				"name":     name,
+				"content":  node.Content,
+			},
+		})
+	}
+	params["messages"] = messages
+	c, err := h.account(target.BotID)
+	if err != nil {
+		return err
+	}
+	return c.call(ctx, action, params)
+}
+
+// SetMsgEmojiLike sets or clears a lightweight emoji reaction on an incoming message (NapCat extension).
+func (h *Hub) SetMsgEmojiLike(ctx context.Context, botID, messageID, emojiID string, set bool) error {
+	if !validAccountID(botID) || strings.TrimSpace(messageID) == "" || strings.TrimSpace(emojiID) == "" {
+		return errors.New("invalid emoji reaction parameters")
+	}
+	c, err := h.account(botID)
+	if err != nil {
+		return err
+	}
+	return c.call(ctx, "set_msg_emoji_like", map[string]any{
+		"message_id": messageID,
+		"emoji_id":   emojiID,
+		"set":        set,
+	})
+}
+
 // UploadFile uses NapCat's group/private upload actions. Its source must be a
 // trusted HTTP(S) URL, an absolute local path, or a local file URI. The caller
 // controls signed URL lifetime; local paths must also exist inside NapCat.
@@ -428,8 +491,13 @@ func (c *connection) call(ctx context.Context, action string, params map[string]
 		return errors.New("OneBot action requires a context")
 	}
 	timeout := responseTimeout
-	if action == "upload_group_file" || action == "upload_private_file" {
+	switch action {
+	case "upload_group_file", "upload_private_file":
 		timeout = uploadResponseTimeout
+	case "send_group_forward_msg", "send_private_forward_msg":
+		timeout = forwardResponseTimeout
+	case "set_msg_emoji_like":
+		timeout = emojiResponseTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

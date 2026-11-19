@@ -17,7 +17,10 @@ import (
 	"multiparse/internal/model"
 )
 
-const maxImagePixels int64 = 20_000_000
+const (
+	maxImagePixels int64 = 50_000_000
+	maxGIFPixels   int64 = 20_000_000
+)
 
 type contextReader struct {
 	ctx    context.Context
@@ -182,7 +185,7 @@ func validateGIF(ctx context.Context, path string, maxDuration int) (float64, er
 			}
 			frames++
 			pixels += w * h
-			if frames > 2000 || pixels > maxImagePixels {
+			if frames > 2000 || pixels > maxGIFPixels {
 				return 0, errors.New("GIF展开帧数量或像素超过安全限制")
 			}
 			if delay == 0 {

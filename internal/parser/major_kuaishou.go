@@ -104,6 +104,9 @@ func majorKuaishou(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 					return nil, err
 				}
 				r.SourceURL = source
+				if id != "" {
+					r.CanonicalURL = "https://www.kuaishou.com/short-video/" + id
+				}
 				return r, nil
 			}})
 		}
@@ -140,6 +143,9 @@ func majorKuaishou(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 		}
 		r.Author = Text(Path(detail, "author", "name"))
 		r.SourceURL = source
+		if id != "" {
+			r.CanonicalURL = "https://www.kuaishou.com/short-video/" + id
+		}
 		return r, nil
 	}})
 	r, err := referenceFallback(stages, false)

@@ -18,6 +18,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"multiparse/internal/model"
 	"multiparse/internal/netx"
+	apppolicy "multiparse/internal/policy"
 )
 
 const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
@@ -35,6 +36,21 @@ func Register(id string, fn Resolver) {
 	}
 	registry[id] = fn
 }
+func isCookieAuthError(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, transient := range []string{"http 500", "http 502", "http 503", "http 504", "timeout", "deadline", "connection", "eof", "无法解码", "json无效"} {
+		if strings.Contains(lower, transient) {
+			return false
+		}
+	}
+	for _, auth := range []string{"登录", "cookie", "http 401", "http 403", "拒绝访问", "unauth", "forbidden", "restricted", "未返回请求笔记", "未返回作品详情"} {
+		if strings.Contains(lower, auth) {
+			return true
+		}
+	}
+	return false
+}
+
 func Available(id string) bool {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
@@ -79,6 +95,19 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 	if r.SourceURL == "" {
 		r.SourceURL = rawURL
 	}
+	if r.CanonicalURL == "" {
+		r.CanonicalURL = apppolicy.CleanTrackingURL(r.SourceURL)
+	} else {
+		r.CanonicalURL = apppolicy.CleanTrackingURL(r.CanonicalURL)
+	}
+	if strings.TrimSpace(policy.Cookie) != "" && !r.CookieExpired && len(r.FallbackErrors) > 0 {
+		firstName := strings.ToLower(r.FallbackErrors[0].Name)
+		if (strings.Contains(firstName, "cookie") || strings.Contains(firstName, "auth")) && isCookieAuthError(r.FallbackErrors[0].Error) {
+			r.CookieExpired = true
+		}
+	}
+	mergedTags, _ := apppolicy.ExtractAndCleanTags(r.Tags, r.Content)
+	r.Tags = mergedTags
 	if final, known := model.Identify(r.SourceURL); known {
 		fp := cfg.Platforms[final.ID]
 		if !fp.Enabled || fp.NSFWBlocked {
@@ -116,6 +145,13 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 		media = append(media, m)
 	}
 	r.Media = media
+	if r.CoverURL == "" && len(r.Media) > 0 {
+		if r.Media[0].ThumbnailURL != "" {
+			r.CoverURL = r.Media[0].ThumbnailURL
+		} else if r.Media[0].Kind == "image" || r.Media[0].Kind == "gif" || r.Media[0].Kind == "livephoto" {
+			r.CoverURL = r.Media[0].URL
+		}
+	}
 	readable := strings.TrimSpace(r.Content) != ""
 	if !protected { readable = readable || strings.TrimSpace(r.Title) != "" || strings.TrimSpace(r.MarkdownContent) != "" }
 	if !readable && len(r.Media) == 0 {
@@ -442,6 +478,7 @@ func Page(ctx context.Context, client *http.Client, raw, cookie string) (*model.
 		r.Title = CleanText(doc.Find("title").First().Text())
 	}
 	r.Author = meta("author")
+	r.CoverURL = Absolute(final, meta("og:image"))
 	body := doc.Find("article,[role='article'],#js_content,.article-content,.article_content,.RichText,.topic_content,.note,.blog_entry,.entry-content").First()
 	if body.Length() > 0 {
 		body.Find("script,style,nav,footer,button,form").Remove()

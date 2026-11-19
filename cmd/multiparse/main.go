@@ -32,7 +32,7 @@ import (
 	"multiparse/internal/web"
 )
 
-const version = "2.0.0"
+const version = "2.1.0"
 
 func main() {
 	if err := run(); err != nil {
@@ -178,6 +178,7 @@ func run() error {
 				"queue_size":      queued,
 				"pending_cleanup": pending,
 				"cleanup_error":   cleanupError,
+				"cookie_alerts":   service.CookieAlerts(),
 				"data_dir":        absData,
 				"cache_dir":       absCache,
 			}

@@ -123,7 +123,12 @@ func twitterResult(data any, source, id string) (*model.ParseResult, error) {
 	if restID := Text(Path(state, "rest_id")); restID != "" && restID != id {
 		return nil, fmt.Errorf("twitter: API returned a different post")
 	}
-	r := &model.ParseResult{Platform: "twitter", SourceURL: source, Author: overseasFirst(Path(state, "core", "user_results", "result", "core", "name"), Path(state, "core", "user_results", "result", "legacy", "name"))}
+	r := &model.ParseResult{Platform: "twitter", SourceURL: source, CanonicalURL: source, Author: overseasFirst(Path(state, "core", "user_results", "result", "core", "name"), Path(state, "core", "user_results", "result", "legacy", "name"))}
+	for _, ht := range Array(Path(legacy, "entities", "hashtags")) {
+		if tag := strings.TrimSpace(Text(Obj(ht)["text"])); tag != "" {
+			r.Tags = append(r.Tags, tag)
+		}
+	}
 	if article := Path(state, "article", "article_results", "result"); article != nil {
 		if err := twitterArticle(r, article); err != nil {
 			return nil, err

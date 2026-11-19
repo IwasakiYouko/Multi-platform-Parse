@@ -11,15 +11,18 @@ import (
 	"time"
 )
 
+const CurrentConfigSchema = 2
+
 type Config struct {
-	Server    ServerConfig              `json:"server"`
-	OneBot    OneBotConfig              `json:"onebot"`
-	Security  SecurityConfig            `json:"security"`
-	Proxy     ProxyConfig               `json:"proxy"`
-	Media     MediaConfig               `json:"media"`
-	Cache     CacheConfig               `json:"cache"`
-	Policy    PolicyConfig              `json:"policy"`
-	Platforms map[string]PlatformPolicy `json:"platforms"`
+	SchemaVersion int                       `json:"schema_version,omitempty"`
+	Server        ServerConfig              `json:"server"`
+	OneBot        OneBotConfig              `json:"onebot"`
+	Security      SecurityConfig            `json:"security"`
+	Proxy         ProxyConfig               `json:"proxy"`
+	Media         MediaConfig               `json:"media"`
+	Cache         CacheConfig               `json:"cache"`
+	Policy        PolicyConfig              `json:"policy"`
+	Platforms     map[string]PlatformPolicy `json:"platforms"`
 }
 type ServerConfig struct {
 	Listen         string   `json:"listen"`
@@ -57,6 +60,9 @@ type MediaConfig struct {
 	ShowCover            bool   `json:"show_cover"`
 	ShowInfo             bool   `json:"show_info"`
 	CleanURL             bool   `json:"clean_url"`
+	ForwardEnabled       bool   `json:"forward_enabled"`
+	SummaryLength        int    `json:"summary_length"`
+	MaxTags              int    `json:"max_tags"`
 	MessageTemplate      string `json:"message_template"`
 	OversizeMode         string `json:"oversize_mode"`
 	Transport            string `json:"transport"`
@@ -65,13 +71,16 @@ type CacheConfig struct {
 	TTLHours int `json:"ttl_hours"`
 }
 type PolicyConfig struct {
-	Enabled         bool    `json:"enabled"`
-	PrivateEnabled  bool    `json:"private_enabled"`
-	GroupReply      bool    `json:"group_reply"`
-	GroupWhitelist  []int64 `json:"group_whitelist"`
-	GroupBlacklist  []int64 `json:"group_blacklist"`
-	RejectText      string  `json:"reject_text"`
-	CooldownSeconds int     `json:"cooldown_seconds"`
+	Enabled          bool    `json:"enabled"`
+	PrivateEnabled   bool    `json:"private_enabled"`
+	GroupReply       bool    `json:"group_reply"`
+	EmojiReaction    bool    `json:"emoji_reaction"`
+	GroupSilentError bool    `json:"group_silent_error"`
+	MaxLinksPerMsg   int     `json:"max_links_per_msg"`
+	GroupWhitelist   []int64 `json:"group_whitelist"`
+	GroupBlacklist   []int64 `json:"group_blacklist"`
+	RejectText       string  `json:"reject_text"`
+	CooldownSeconds  int     `json:"cooldown_seconds"`
 }
 type PlatformPolicy struct {
 	Enabled         bool   `json:"enabled"`
@@ -85,7 +94,8 @@ type PlatformPolicy struct {
 	CoverMode       string `json:"cover_mode"`
 }
 
-const DefaultMessageTemplate = "{title}\n{author}\n{content}\n{url}"
+const DefaultMessageTemplate = "{title}\n{tags}\n{content}\n{url}"
+const LegacyMessageTemplateV20 = "{title}\n{author}\n{content}\n{url}"
 type Platform struct {
 	ID       string   `json:"id"`
 	Name     string   `json:"name"`
@@ -197,14 +207,15 @@ func DefaultConfig() Config {
 		p[v.ID] = PlatformPolicy{Enabled: true, Overseas: v.Overseas, TemplateMode: "inherit", CoverMode: "inherit"}
 	}
 	return Config{
-		Server:   ServerConfig{Listen: "::", Port: 10492, TrustedProxies: []string{}, AdminNetworks: []string{}},
-		OneBot:   OneBotConfig{Token: NewID() + NewID(), SelfIDs: []string{}},
-		Security: SecurityConfig{Failures: 5, WindowMinutes: 15, BanMinutes: 60, SessionHours: 12},
-		Proxy:    ProxyConfig{Mode: "direct"},
-		Media:    MediaConfig{MaxBytes: 80 * 1024 * 1024, MaxDurationSeconds: 1500, MaxImages: 30, Quality: 720, Concurrency: 2, TranscodeConcurrency: 1, MaxDiskBytes: 2 * 1024 * 1024 * 1024, AutoDownload: true, ShowCover: true, ShowInfo: true, CleanURL: true, MessageTemplate: DefaultMessageTemplate, OversizeMode: "link", Transport: "file"},
-		Cache:    CacheConfig{TTLHours: 24},
-		Policy:   PolicyConfig{Enabled: true, PrivateEnabled: true, GroupReply: true, CooldownSeconds: 30, RejectText: "{platform} 暂不支持解析：{reason}", GroupWhitelist: []int64{}, GroupBlacklist: []int64{}},
-		Platforms: p,
+		SchemaVersion: CurrentConfigSchema,
+		Server:        ServerConfig{Listen: "::", Port: 10492, TrustedProxies: []string{}, AdminNetworks: []string{}},
+		OneBot:        OneBotConfig{Token: NewID() + NewID(), SelfIDs: []string{}},
+		Security:      SecurityConfig{Failures: 5, WindowMinutes: 15, BanMinutes: 60, SessionHours: 12},
+		Proxy:         ProxyConfig{Mode: "direct"},
+		Media:         MediaConfig{MaxBytes: 80 * 1024 * 1024, MaxDurationSeconds: 1500, MaxImages: 30, Quality: 720, Concurrency: 2, TranscodeConcurrency: 1, MaxDiskBytes: 2 * 1024 * 1024 * 1024, AutoDownload: true, ShowCover: true, ShowInfo: true, CleanURL: true, ForwardEnabled: true, SummaryLength: 300, MaxTags: 8, MessageTemplate: DefaultMessageTemplate, OversizeMode: "link", Transport: "file"},
+		Cache:         CacheConfig{TTLHours: 24},
+		Policy:        PolicyConfig{Enabled: true, PrivateEnabled: true, GroupReply: true, EmojiReaction: true, GroupSilentError: false, MaxLinksPerMsg: 3, CooldownSeconds: 30, RejectText: "{platform} 暂不支持解析：{reason}", GroupWhitelist: []int64{}, GroupBlacklist: []int64{}},
+		Platforms:     p,
 	}
 }
 
@@ -227,6 +238,27 @@ func NormalizeConfig(c *Config) {
 	}
 	if c.Policy.GroupBlacklist == nil {
 		c.Policy.GroupBlacklist = []int64{}
+	}
+	if c.SchemaVersion < CurrentConfigSchema {
+		if c.Media.SummaryLength == 0 {
+			c.Media.SummaryLength = 300
+		}
+		if c.Media.MaxTags == 0 {
+			c.Media.MaxTags = 8
+		}
+		if strings.TrimSpace(c.Media.MessageTemplate) == "" || strings.TrimSpace(c.Media.MessageTemplate) == LegacyMessageTemplateV20 {
+			c.Media.MessageTemplate = DefaultMessageTemplate
+		}
+		c.SchemaVersion = CurrentConfigSchema
+	}
+	if c.Policy.MaxLinksPerMsg <= 0 {
+		c.Policy.MaxLinksPerMsg = 3
+	}
+	if c.Media.SummaryLength < 0 {
+		c.Media.SummaryLength = 0
+	}
+	if c.Media.MaxTags < 0 {
+		c.Media.MaxTags = 0
 	}
 	if strings.TrimSpace(c.Media.MessageTemplate) == "" {
 		c.Media.MessageTemplate = DefaultMessageTemplate
@@ -263,10 +295,13 @@ func (c Config) Validate() error {
 	if c.Policy.CooldownSeconds < 0 || c.Policy.CooldownSeconds > 86400 {
 		return fmt.Errorf("会话冷却必须为0–86400秒")
 	}
+	if c.Policy.MaxLinksPerMsg < 1 || c.Policy.MaxLinksPerMsg > 32 {
+		return fmt.Errorf("单条消息最大链接数必须为1–32")
+	}
 	if c.Security.Failures < 1 || c.Security.Failures > 100 || c.Security.WindowMinutes < 1 || c.Security.WindowMinutes > 1440 || c.Security.BanMinutes < 1 || c.Security.BanMinutes > 43200 || c.Security.SessionHours < 1 || c.Security.SessionHours > 168 {
 		return fmt.Errorf("登录安全参数超出范围")
 	}
-	if c.Media.MaxBytes < 1024 || c.Media.MaxBytes > 4*1024*1024*1024 || c.Media.MaxDiskBytes < c.Media.MaxBytes || c.Media.MaxImages < 1 || c.Media.MaxImages > 200 || c.Media.MaxDurationSeconds < 1 || c.Media.MaxDurationSeconds > 86400 || c.Media.Concurrency < 1 || c.Media.Concurrency > 16 || c.Media.TranscodeConcurrency < 1 || c.Media.TranscodeConcurrency > 4 {
+	if c.Media.MaxBytes < 1024 || c.Media.MaxBytes > 4*1024*1024*1024 || c.Media.MaxDiskBytes < c.Media.MaxBytes || c.Media.MaxImages < 1 || c.Media.MaxImages > 200 || c.Media.MaxDurationSeconds < 1 || c.Media.MaxDurationSeconds > 86400 || c.Media.Concurrency < 1 || c.Media.Concurrency > 16 || c.Media.TranscodeConcurrency < 1 || c.Media.TranscodeConcurrency > 4 || c.Media.SummaryLength < 0 || c.Media.SummaryLength > 4000 || c.Media.MaxTags < 0 || c.Media.MaxTags > 50 {
 		return fmt.Errorf("媒体资源限制无效")
 	}
 	if len(c.Media.MessageTemplate) > 4096 {
@@ -332,30 +367,38 @@ type FallbackAttempt struct {
 }
 
 type Media struct {
-	Kind         string            `json:"kind"`
-	URL          string            `json:"url"`
-	AudioURL     string            `json:"audio_url,omitempty"`
-	VideoURL     string            `json:"video_url,omitempty"`
-	ThumbnailURL string            `json:"thumbnail_url,omitempty"`
-	BackupURLs   []string          `json:"backup_urls,omitempty"`
-	Headers      map[string]string `json:"headers,omitempty"`
-	Width        int               `json:"width,omitempty"`
-	Height       int               `json:"height,omitempty"`
-	Duration     float64           `json:"duration,omitempty"`
-	Ext          string            `json:"ext,omitempty"`
+	Kind            string            `json:"kind"`
+	URL             string            `json:"url"`
+	AudioURL        string            `json:"audio_url,omitempty"`
+	VideoURL        string            `json:"video_url,omitempty"`
+	VideoBackupURLs []string          `json:"video_backup_urls,omitempty"`
+	ThumbnailURL    string            `json:"thumbnail_url,omitempty"`
+	BackupURLs      []string          `json:"backup_urls,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	Width           int               `json:"width,omitempty"`
+	Height          int               `json:"height,omitempty"`
+	Duration        float64           `json:"duration,omitempty"`
+	Ext             string            `json:"ext,omitempty"`
 }
 type ParseResult struct {
-	Platform        string            `json:"platform"`
-	SourceURL       string            `json:"source_url"`
-	Title           string            `json:"title"`
-	Author          string            `json:"author,omitempty"`
-	Content         string            `json:"content"`
-	MarkdownContent string            `json:"markdown_content,omitempty"`
-	FallbackErrors  []FallbackAttempt `json:"fallback_errors,omitempty"`
-	Extraction      *Extraction       `json:"extraction,omitempty"`
-	Type            string            `json:"type"`
-	Media           []Media           `json:"media"`
-	Headers         map[string]string `json:"headers,omitempty"`
+	Platform            string            `json:"platform"`
+	SourceURL           string            `json:"source_url"`
+	CanonicalURL        string            `json:"canonical_url,omitempty"`
+	CoverURL            string            `json:"cover_url,omitempty"`
+	Title               string            `json:"title"`
+	Author              string            `json:"author,omitempty"`
+	Tags                []string          `json:"tags,omitempty"`
+	Content             string            `json:"content"`
+	MarkdownContent     string            `json:"markdown_content,omitempty"`
+	CookieExpired       bool              `json:"cookie_expired,omitempty"`
+	DegradedReason      string            `json:"degraded_reason,omitempty"`
+	DegradedMaxDuration int               `json:"degraded_max_duration,omitempty"`
+	DegradedMaxBytes    int64             `json:"degraded_max_bytes,omitempty"`
+	FallbackErrors      []FallbackAttempt `json:"fallback_errors,omitempty"`
+	Extraction          *Extraction       `json:"extraction,omitempty"`
+	Type                string            `json:"type"`
+	Media               []Media           `json:"media"`
+	Headers             map[string]string `json:"headers,omitempty"`
 }
 type Artifact struct {
 	Kind      string  `json:"kind"`
@@ -394,6 +437,16 @@ type Task struct {
 type Segment struct {
 	Type string         `json:"type"`
 	Data map[string]any `json:"data"`
+}
+type ForwardNode struct {
+	UserID   string    `json:"user_id"`
+	Nickname string    `json:"nickname"`
+	Content  []Segment `json:"content"`
+}
+type CookieAlert struct {
+	Platform   string    `json:"platform"`
+	Reason     string    `json:"reason"`
+	DetectedAt time.Time `json:"detected_at"`
 }
 type Target struct {
 	BotID     string `json:"bot_id"`

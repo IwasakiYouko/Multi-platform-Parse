@@ -146,7 +146,7 @@ func (p *preparation) stageExtraction(ctx context.Context, result model.ParseRes
 func (p *preparation) optionalExtractionCover(ctx context.Context, raw string, headers map[string]string) (model.Artifact, error) {
 	before, beforeBytes := p.sequence, p.bytes
 	cover, prepareErr := p.prepareItem(ctx, model.Media{Kind: "image", URL: raw}, headers)
-	if prepareErr == nil && ctx.Err() == nil && cover.Kind == "image" && cover.ThumbPath == "" && cover.Size <= 4<<20 && filepath.Ext(cover.Path) != ".gif" {
+	if prepareErr == nil && ctx.Err() == nil && cover.Kind == "image" && cover.ThumbPath == "" && cover.Size <= 16<<20 && filepath.Ext(cover.Path) != ".gif" {
 		return cover, nil
 	}
 	entries, cleanupErr := os.ReadDir(p.dir)
@@ -169,7 +169,7 @@ func (p *preparation) optionalExtractionCover(ctx context.Context, raw string, h
 	var pathErr *os.PathError
 	var linkErr *os.LinkError
 	var syscallErr *os.SyscallError
-	if errors.As(prepareErr, &pathErr) || errors.As(prepareErr, &linkErr) || errors.As(prepareErr, &syscallErr) || errors.Is(prepareErr, errInvalidReservation) || errors.Is(prepareErr, errMediaDiskLimit) || errors.Is(prepareErr, errMediaAccountingOverflow) {
+	if errors.As(prepareErr, &pathErr) || errors.As(prepareErr, &linkErr) || errors.As(prepareErr, &syscallErr) || errors.Is(prepareErr, errMediaDiskLimit) || errors.Is(prepareErr, errInvalidReservation) || errors.Is(prepareErr, errMediaAccountingOverflow) {
 		return model.Artifact{}, prepareErr
 	}
 	return model.Artifact{}, nil

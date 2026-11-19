@@ -7,7 +7,7 @@ Go 主程序的多平台链接解析工具。接收 NapCat 的 OneBot v11 反向
 
 除保留原生实现的哔哩哔哩（含 WBI 签名回退）外，其余平台（含抖音移动端设备池与日常回退）以 ParseHub **2.3.15** 为迁移基线。YouTube、Facebook、Snapchat 由 Go 调用固定版本的 yt-dlp/EJS/Deno；其他平台使用原生 Go 适配器，不需要部署外部服务。FFmpeg/ffprobe 负责本地媒体处理；运行镜像基于 **Alpine Linux (`alpine:3.24`)** 单容器构建，面向 **Linux amd64**，默认使用 Docker Engine 的 **host 网络**。
 
-**v2.0.0 全新引入平台级消息区块变量与自定义模板引擎、重构管理后台视觉与交互、移除 Cap/Valkey 附属容器并将镜像基底迁移至 Alpine Linux。从 v1.x 升级只需保留 `app-data` 数据卷并切换至新版单容器 `compose.yaml`，数据库配置将自动平滑迁移。**
+**v2.1.0 全面升级为「消息 1 作品导览名片（无水印高清封面 + 标题 + Tag + 摘要 + 标准纯净直链）+ 消息 2 单媒体直发 / 多媒体合并转发」双层投递架构，实现小红书视频与原图无损去水印直出、全平台标准直链重构、同作品跨短链缓存共享、超限视频优雅降级与 Cookie 失效主动预警。从旧版升级只需保留 `app-data` 数据卷并更新镜像标签，配置将自动平滑迁移。**
 
 ## 快速开始：使用 GitHub Release
 
@@ -17,13 +17,13 @@ Release 提供由 GitHub Actions 构建的单容器 Alpine 镜像归档，无需
 mkdir -p multiparse/certs
 cd multiparse
 
-RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v2.0.0
-for file in compose.yaml alpine-packages.txt multi-platform-parse-v2.0.0-linux-amd64.tar.gz SHA256SUMS; do
+RELEASE=https://github.com/IwasakiYouko/Multi-platform-Parse/releases/download/v2.1.0
+for file in compose.yaml alpine-packages.txt multi-platform-parse-v2.1.0-linux-amd64.tar.gz SHA256SUMS; do
   curl --fail --location --remote-name "$RELEASE/$file"
 done
 curl --fail --location --output .env.example "$RELEASE/default.env.example"
 sha256sum --check SHA256SUMS
-docker load --input multi-platform-parse-v2.0.0-linux-amd64.tar.gz
+docker load --input multi-platform-parse-v2.1.0-linux-amd64.tar.gz
 cp .env.example .env
 docker compose up -d --wait
 ```
@@ -52,7 +52,7 @@ name: multiparse
 
 services:
   app:
-    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-2.0.0}
+    image: ghcr.io/iwasakiyouko/multi-platform-parse:${IMAGE_TAG:-2.1.0}
     network_mode: host
     restart: unless-stopped
     init: true
@@ -88,7 +88,7 @@ volumes:
   media:
 ```
 
-**从 v1.x 升级至 v2.0.0**：先停止旧版服务（`docker compose down --remove-orphans`，**切勿加 `-v`**），使用新版 `compose.yaml` 与 `IMAGE_TAG=2.0.0` 执行 `docker compose up -d --wait`。启动时程序会自动补齐默认消息模板字段并清理历史 `cap_replays` 表；升级稳定后可按需清理不再使用的旧 `multiparse_secrets` 与 `multiparse_cap-data` 数据卷。
+**从旧版升级至 v2.1.0**：先停止旧版服务（`docker compose down --remove-orphans`，**切勿加 `-v`**），使用新版 `compose.yaml` 与 `IMAGE_TAG=2.1.0` 执行 `docker compose up -d --wait`。启动时程序会自动迁移配置架构版本并保留既有自定义策略。
 
 ### 可选添加项
 
@@ -99,7 +99,7 @@ volumes:
 写入与 Compose 同目录的 `.env`：
 
 ```dotenv
-IMAGE_TAG=2.0.0
+IMAGE_TAG=2.1.0
 LISTEN_ADDR=::
 START_PORT=10492
 EXTERNAL_URL=
@@ -140,29 +140,34 @@ volumes:
 镜像地址：
 
 ```text
-ghcr.io/iwasakiyouko/multi-platform-parse:2.0.0
+ghcr.io/iwasakiyouko/multi-platform-parse:2.1.0
 ```
 
 本仓库镜像已公开，可匿名拉取。Release 的环境变量附件使用 `default.env.example` 名称，快速开始命令将其保存为本地 `.env.example` 后校验和使用。
 
-## 消息区块变量与自定义模板
+## 消息区块变量与双层投递架构
 
-v2.0.0 将解析输出划分为独立的消息区块变量。可在面板「媒体、模板与出口」设置**全局默认消息模板**（默认为 `{title}\n{author}\n{content}\n{url}`），也可在「平台与模板」中点击任意平台的「配置抽屉」，为单个平台独立指定：
+v2.1.0 采用**「消息 1：作品导览名片 + 消息 2：单媒体直发 / 多媒体合并转发」**双层投递结构：
+- **消息 1**：发送高清无水印封面图（或单图原图）及模板渲染文本（默认模板为 `{title}\n{tags}\n{content}\n{url}`）。
+- **消息 2**：若仅含 1 张图片则免重复发送；若为单个视频则直接独立发送以便群内一键播放；若包含多张图片、多个视频或实况图（静图+视频），自动通过 OneBot `send_group_forward_msg` / `send_private_forward_msg` 整合进 1 条**合并转发**卡片发出（超长原文自动附于转发首节点，最长保留 8000 字符）。
+
+可在面板「平台与消息模板」设置全局默认模板，或点击任意平台的「配置模板与策略」单独指定：
 
 - **模板模式（`template_mode`）**：`inherit`（跟随全局模板）、`custom`（使用该平台独立模板）、`none`（不发送任何文字，仅发送图片/视频媒体）。
-- **封面策略（`cover_mode`）**：`inherit`（跟随全局封面开关）、`on`（强制附带视频封面）、`off`（强制关闭视频封面，如短视频仅发纯视频）。
+- **封面策略（`cover_mode`）**：`inherit`（跟随全局封面开关）、`on`（强制附带封面）、`off`（强制关闭封面）。
 
 ### 支持的模板变量
 
 | 区块变量（自带格式前缀或括号） | 纯值变量（不含前缀，便于自定义拼接） | 展开说明 |
 |---|---|---|
-| `{title}` → `【...】` | `{raw_title}` | 作品标题（截断至 300 字符） |
+| `{title}` → `【...】` | `{raw_title}` | 作品标题（截断至 300 字符，B 站多 P 自动附分集标识） |
+| `{tags}` → `#标签1 #标签2` | `{raw_tags}` | 作品话题标签（提取结构化标签与 `#话题` 并自动剥离正文尾部重复标签串；`{raw_tags}` 以 ` · ` 连接） |
 | `{author}` → `作者：...` | `{raw_author}` | 作者昵称（截断至 100 字符） |
-| `{content}` → 正文无前缀 | `{raw_content}` | 作品正文/简介（无额外标签前缀，优先使用富文本 Markdown，截断至 1800 字符；若同时引用标题变量且与标题完全一致则自动置空去重） |
-| `{url}` → `链接：...` | `{raw_url}` | 作品链接（开启全局「链接净化」后自动去除追踪参数） |
-| `{clean_url}` → `链接：...` | `{raw_clean_url}` | 始终去除 `utm_*`、`spm_id_from`、`vd_source`、`share_*`、`igsh` 等追踪参数的纯净链接 |
+| `{content}` → 正文无前缀 | `{raw_content}` | 作品正文摘要（默认截断至 300 字符可配，优先使用富文本 Markdown，与标题重复或尾部纯标签串自动去重） |
+| `{url}` → `链接：...` | `{raw_url}` | 作品标准直链（默认还原短链并按白名单剥离全部追踪与指纹参数） |
+| `{clean_url}` → `链接：...` | `{raw_clean_url}` | 始终输出剥离分享追踪参数后的官方纯净标准直链 |
 | `{platform}` → `[...]` | `{raw_platform}` | 带方括号的平台中文名称（如 `[哔哩哔哩]`、`[抖音]`；纯值变量输出 `哔哩哔哩`） |
-| `{type}` → `[...]` | `{raw_type}` | 带方括号的内容类型（如 `[视频]`、`[图集]`、`[文章]`、`[音频]`、`[实况图]`、`[动态]`；纯值变量不含方括号） |
+| `{type}` → `[...]` | `{raw_type}` | 带方括号的内容类型（如 `[视频]`、`[图集]`、`[混合媒体]`、`[文章]`、`[音频]`、`[实况图]`、`[动态]`；纯值变量不含方括号） |
 | `{media_stats}` → `共 ...` | — | 媒体数量摘要（如 `共 1 个视频`、`共 6 张图片`、`共 3 张实况图`） |
 
 **智能空行折叠规则**：支持在模板中混合任意自定义文字、符号或 Emoji（例如 `🎬 【{raw_platform}】{raw_title}`）。若模板中某一行包含变量占位符，且该行引用的**所有**变量在当前作品中均为空（例如无作者信息，或正文因与标题重复而被去重），引擎会自动折叠整行，不会残留突兀的前缀文字或连续多余空行；纯静态装饰行（不含任何 `{...}` 变量）则原样保留。
@@ -341,8 +346,8 @@ unset PASSWORD
 维护者发布示例：
 
 ```bash
-git tag v2.0.0
-git push origin v2.0.0
+git tag v2.1.0
+git push origin v2.1.0
 ```
 
 ## 许可与引用

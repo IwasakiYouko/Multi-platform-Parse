@@ -54,10 +54,61 @@ type extractor struct {
 	seen      map[string]bool
 }
 
+func stripCQBlocks(text string) string {
+	var out strings.Builder
+	for text != "" && out.Len() <= 512 {
+		start := strings.Index(text, "[CQ:")
+		if start < 0 {
+			out.WriteString(text)
+			break
+		}
+		out.WriteString(text[:start])
+		text = text[start:]
+		end := strings.IndexByte(text, ']')
+		if end < 0 {
+			break
+		}
+		out.WriteByte(' ')
+		text = text[end+1:]
+	}
+	return out.String()
+}
+
+func hasNoParseMarker(segments []model.Segment) bool {
+	var plain strings.Builder
+	for _, seg := range segments[:min(len(segments), 200)] {
+		if seg.Type != "text" {
+			continue
+		}
+		text, _ := seg.Data["text"].(string)
+		plain.WriteString(stripCQBlocks(text))
+		if plain.Len() > 512 {
+			break
+		}
+	}
+	trimmed := strings.TrimSpace(plain.String())
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "/") || strings.HasPrefix(lower, "-np") || strings.HasPrefix(lower, "!np") || strings.HasPrefix(trimmed, "不解析") || strings.Contains(trimmed, "[不解析]") {
+		return true
+	}
+	for _, field := range strings.Fields(lower) {
+		if field == "-np" || field == "!np" {
+			return true
+		}
+	}
+	return false
+}
+
 // Extract returns only links belonging to model.Platforms, plus canonical Bilibili
 // BV links. It decodes nested JSON, XML attributes/text and escaped share cards;
 // it never resolves URLs, fetches XML entities, or follows arbitrary card targets.
 func Extract(event model.Event) []string {
+	if hasNoParseMarker(event.Segments) {
+		return nil
+	}
 	x := extractor{remaining: maxExtractBytes, seen: make(map[string]bool)}
 	for _, segment := range event.Segments[:min(len(event.Segments), 200)] {
 		if x.exhausted() {
@@ -123,6 +174,9 @@ func (x *extractor) walk(value any, depth int) {
 	case string:
 		x.walkString(value, depth)
 	case map[string]any:
+		if app, _ := value["app"].(string); app == "com.tencent.multimsg" {
+			return
+		}
 		if len(value) > maxExtractNodes-x.nodes {
 			return
 		}
@@ -309,6 +363,14 @@ func (x *extractor) addLink(raw string) {
 		return
 	}
 	if port := parsed.Port(); port != "" && port != "80" && port != "443" {
+		return
+	}
+	// Ignore bare domain homepages and static card icon/avatar assets embedded in share JSON.
+	if (parsed.Path == "" || parsed.Path == "/") && parsed.RawQuery == "" {
+		return
+	}
+	lowerPath := strings.ToLower(parsed.Path)
+	if lowerPath == "/login" || strings.HasSuffix(lowerPath, ".png") || strings.HasSuffix(lowerPath, ".jpg") || strings.HasSuffix(lowerPath, ".jpeg") || strings.HasSuffix(lowerPath, ".gif") || strings.HasSuffix(lowerPath, ".webp") || strings.HasSuffix(lowerPath, ".ico") || strings.HasSuffix(lowerPath, ".svg") {
 		return
 	}
 	if _, ok := model.Identify(raw); !ok {

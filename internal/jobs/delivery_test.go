@@ -21,10 +21,11 @@ import (
 type deliveryAction struct {
 	Action string `json:"action"`
 	Params struct {
-		Message []model.Segment `json:"message"`
-		File    string          `json:"file"`
-		Name    string          `json:"name"`
-		GroupID int64           `json:"group_id"`
+		Message  []model.Segment `json:"message"`
+		Messages []model.Segment `json:"messages"`
+		File     string          `json:"file"`
+		Name     string          `json:"name"`
+		GroupID  int64           `json:"group_id"`
 	} `json:"params"`
 	Echo string `json:"echo"`
 }
@@ -93,7 +94,7 @@ func newDeliveryHarness(t *testing.T, transport string) *deliveryHarness {
 func (x *deliveryHarness) entry(t *testing.T, files ...model.Artifact) model.CacheEntry {
 	t.Helper()
 	entry := seedCache(t, x.s, strings.Repeat("d", 64), time.Now())
-	entry.Result = model.ParseResult{Platform: "bilibili", Title: "title", Author: "author", Content: "content", SourceURL: entry.URL}
+	entry.Result = model.ParseResult{Platform: "bilibili", Title: "title", Author: "author", Tags: []string{"科技", "数码"}, Content: "content", SourceURL: entry.URL}
 	entry.Files = files
 	for i := range entry.Files {
 		f := &entry.Files[i]
@@ -215,22 +216,40 @@ func (x *deliveryHarness) location(t *testing.T, value any, path string) {
 	}
 }
 
-func TestDeliverImageTextThenVideosAwaitRealACK(t *testing.T) {
+func forwardNodeSegment(t *testing.T, node model.Segment) model.Segment {
+	t.Helper()
+	if node.Type != "node" {
+		t.Fatalf("expected node segment, got %q", node.Type)
+	}
+	rawContent, ok := node.Data["content"].([]any)
+	if !ok || len(rawContent) != 1 {
+		t.Fatalf("unexpected forward node content: %#v", node.Data["content"])
+	}
+	item, ok := rawContent[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected forward segment map: %#v", rawContent[0])
+	}
+	segType, _ := item["type"].(string)
+	segData, _ := item["data"].(map[string]any)
+	return model.Segment{Type: segType, Data: segData}
+}
+
+func TestDeliverCoverCardThenMergedForwardAndFallback(t *testing.T) {
 	for _, transport := range []string{"file", "http"} {
 		t.Run(transport, func(t *testing.T) {
 			x := newDeliveryHarness(t, transport)
 			entry := x.entry(t,
 				model.Artifact{Kind: "video", Path: "first.mp4", ThumbPath: "image.jpg", Size: 10},
 				model.Artifact{Kind: "image", Path: "image.jpg", Size: 10},
-				model.Artifact{Kind: "image", Path: "image.jpg", Size: 10},
+				model.Artifact{Kind: "image", Path: "second-img.jpg", Size: 10},
 				model.Artifact{Kind: "video", Path: "second.mp4", ThumbPath: "cover.jpg", Size: 10},
 			)
 			result, _ := x.start(t, &entry)
+			// Message 1: Single primary cover + Title/Tags/Content/URL
 			first := x.next(t)
-			deliveryTypes(t, first, "image,image,text")
+			deliveryTypes(t, first, "image,text")
 			x.location(t, first.Params.Message[0].Data["file"], entry.Files[0].ThumbPath)
-			x.location(t, first.Params.Message[1].Data["file"], entry.Files[3].ThumbPath)
-			if got := first.Params.Message[2].Data["text"]; got != "【title】\n作者：author\ncontent\n链接："+entry.URL {
+			if got := first.Params.Message[1].Data["text"]; got != "【title】\n#科技 #数码\ncontent\n链接："+entry.URL {
 				t.Fatalf("formatted text changed: %q", got)
 			}
 			x.none(t)
@@ -240,14 +259,26 @@ func TestDeliverImageTextThenVideosAwaitRealACK(t *testing.T) {
 			default:
 			}
 			x.ack(t, first, 0)
-			for _, index := range []int{0, 3} {
-				video := x.next(t)
-				deliveryTypes(t, video, "video")
-				x.location(t, video.Params.Message[0].Data["file"], entry.Files[index].Path)
-				x.location(t, video.Params.Message[0].Data["thumb"], entry.Files[index].ThumbPath)
-				x.none(t)
-				x.ack(t, video, 0)
+
+			// Message 2: Merged forward containing all 4 deduplicated media items in order.
+			fwd := x.next(t)
+			if fwd.Action != "send_group_forward_msg" || len(fwd.Params.Messages) != 4 {
+				t.Fatalf("expected 4-node send_group_forward_msg, got action=%q len=%d", fwd.Action, len(fwd.Params.Messages))
 			}
+			s0 := forwardNodeSegment(t, fwd.Params.Messages[0])
+			s1 := forwardNodeSegment(t, fwd.Params.Messages[1])
+			s2 := forwardNodeSegment(t, fwd.Params.Messages[2])
+			s3 := forwardNodeSegment(t, fwd.Params.Messages[3])
+			if s0.Type != "video" || s1.Type != "image" || s2.Type != "image" || s3.Type != "video" {
+				t.Fatalf("wrong forward media sequence: %s,%s,%s,%s", s0.Type, s1.Type, s2.Type, s3.Type)
+			}
+			x.location(t, s0.Data["file"], entry.Files[0].Path)
+			x.location(t, s0.Data["thumb"], entry.Files[0].ThumbPath)
+			x.location(t, s1.Data["file"], entry.Files[1].Path)
+			x.location(t, s2.Data["file"], entry.Files[2].Path)
+			x.location(t, s3.Data["file"], entry.Files[3].Path)
+			x.ack(t, fwd, 0)
+
 			if err := deliveryResult(t, result); err != nil {
 				t.Fatal(err)
 			}
@@ -256,8 +287,51 @@ func TestDeliverImageTextThenVideosAwaitRealACK(t *testing.T) {
 	}
 }
 
+func TestDeliverMixedForwardNegativeACKFallsBackToImagesForwardAndSeparateVideos(t *testing.T) {
+	x := newDeliveryHarness(t, "file")
+	entry := x.entry(t,
+		model.Artifact{Kind: "image", Path: "img1.jpg", Size: 10},
+		model.Artifact{Kind: "image", Path: "img2.jpg", Size: 10},
+		model.Artifact{Kind: "video", Path: "vid1.mp4", ThumbPath: "thumb1.jpg", Size: 10},
+	)
+	result, _ := x.start(t, &entry)
+	msg1 := x.next(t)
+	deliveryTypes(t, msg1, "image,text")
+	x.ack(t, msg1, 0)
+
+	mixedFwd := x.next(t)
+	if mixedFwd.Action != "send_group_forward_msg" || len(mixedFwd.Params.Messages) != 3 {
+		t.Fatalf("expected initial 3-node mixed forward, got %+v", mixedFwd)
+	}
+	// Simulate QQNT rejecting video inside merged forward -> automatic fallback!
+	x.ack(t, mixedFwd, 1200)
+
+	imgFwd := x.next(t)
+	if imgFwd.Action != "send_group_forward_msg" || len(imgFwd.Params.Messages) != 2 {
+		t.Fatalf("expected 2-image fallback forward, got %+v", imgFwd)
+	}
+	img0 := forwardNodeSegment(t, imgFwd.Params.Messages[0])
+	img1 := forwardNodeSegment(t, imgFwd.Params.Messages[1])
+	if img0.Type != "image" || img1.Type != "image" {
+		t.Fatalf("expected image-only forward nodes, got %s, %s", img0.Type, img1.Type)
+	}
+	x.location(t, img0.Data["file"], entry.Files[0].Path)
+	x.location(t, img1.Data["file"], entry.Files[1].Path)
+	x.ack(t, imgFwd, 0)
+
+	vidMsg := x.next(t)
+	deliveryTypes(t, vidMsg, "video")
+	x.location(t, vidMsg.Params.Message[0].Data["file"], entry.Files[2].Path)
+	x.ack(t, vidMsg, 0)
+
+	if err := deliveryResult(t, result); err != nil {
+		t.Fatalf("mixed forward fallback should succeed: %v", err)
+	}
+	x.none(t)
+}
+
 func TestDeliverNegativeACKStopsWithoutRepeatingInitialMessage(t *testing.T) {
-	for _, failedStage := range []string{"initial", "video"} {
+	for _, failedStage := range []string{"initial", "forward"} {
 		t.Run(failedStage, func(t *testing.T) {
 			x := newDeliveryHarness(t, "file")
 			entry := x.entry(t, model.Artifact{Kind: "video", Path: "video.mp4", ThumbPath: "cover.jpg", Size: 10}, model.Artifact{Kind: "video", Path: "later.mp4", Size: 10})
@@ -265,11 +339,13 @@ func TestDeliverNegativeACKStopsWithoutRepeatingInitialMessage(t *testing.T) {
 			failed := x.next(t)
 			deliveryTypes(t, failed, "image,text")
 			wantContext := "图文"
-			if failedStage == "video" {
+			if failedStage == "forward" {
 				x.ack(t, failed, 0)
 				failed = x.next(t)
-				deliveryTypes(t, failed, "video")
-				wantContext = "视频 1"
+				if failed.Action != "send_group_forward_msg" {
+					t.Fatalf("expected send_group_forward_msg, got %q", failed.Action)
+				}
+				wantContext = "合并转发"
 			}
 			x.ack(t, failed, 100)
 			err := deliveryResult(t, result)

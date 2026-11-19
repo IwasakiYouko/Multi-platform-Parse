@@ -284,12 +284,20 @@ func TestBackendCancellationKillsProcessGroup(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("backend ignored cancellation")
 	}
-	// A killed child may briefly remain a zombie until the host's init reaps it.
-	if err := syscall.Kill(pid, 0); err == nil {
-		status, readErr := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-		if readErr == nil && !strings.Contains(string(status), ") Z ") {
-			t.Fatalf("child %d survived process-group cancellation", pid)
+	// A killed child may briefly remain runnable/dying or a zombie until the kernel finishes exit/reap.
+	reapDeadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if err := syscall.Kill(pid, 0); err != nil {
+			break
 		}
+		status, readErr := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+		if readErr != nil || strings.Contains(string(status), ") Z ") || strings.Contains(string(status), ") X ") {
+			break
+		}
+		if time.Now().After(reapDeadline) {
+			t.Fatalf("child %d survived process-group cancellation (stat=%q)", pid, string(status))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -366,13 +366,48 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 			effectiveTemplate = b.Template
 			rendered = policy.FormatWithTemplate(cfg, b.Template, *res, nil)
 		}
+		visualItems := 0
+		videos := 0
+		images := 0
+		for _, m := range res.Media {
+			switch m.Kind {
+			case "video":
+				visualItems++
+				videos++
+			case "image", "gif":
+				visualItems++
+				images++
+			case "livephoto":
+				visualItems += 2
+				images++
+				videos++
+			}
+		}
+		msg2Mode := "none"
+		showCover := false
+		if cfg.Media.AutoDownload {
+			showCover = policy.EffectiveShowCover(cfg, res.Platform) || (visualItems == 1 && images == 1)
+			if visualItems == 1 && videos == 1 {
+				msg2Mode = "direct_video"
+			} else if visualItems >= 2 {
+				if cfg.Media.ForwardEnabled {
+					msg2Mode = "merged_forward"
+				} else {
+					msg2Mode = "sequential"
+				}
+			}
+		}
+		_, fullInForward := policy.FullTextForForward(cfg, *res)
 		reply(w, 200, map[string]any{
 			"result":             sanitizePreviewResult(*res),
 			"rendered":           rendered,
-			"clean_url":          policy.CleanTrackingURL(res.SourceURL),
+			"clean_url":          policy.CleanTrackingURL(policy.EffectiveSourceURL(*res)),
 			"effective_template": effectiveTemplate,
-			"show_cover":         policy.EffectiveShowCover(cfg, res.Platform),
+			"show_cover":         showCover,
 			"media_count":        len(res.Media),
+			"visual_items":       visualItems,
+			"message2_mode":      msg2Mode,
+			"full_text_forward":  fullInForward && msg2Mode == "merged_forward",
 		})
 		return
 	case path == "/api/platforms" && method == "GET":

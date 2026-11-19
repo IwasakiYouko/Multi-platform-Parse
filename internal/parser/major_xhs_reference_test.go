@@ -69,24 +69,31 @@ func TestXHSReferenceRequestedNote(t *testing.T) {
 
 func TestXHSReferenceRawLiveAndCodecOrder(t *testing.T) {
 	image := "https://sns-img.example/0123456789abcdef0123456789abcdef/trace/image!resize?token=ignored"
-	note := map[string]any{"type": "normal", "title": "album", "desc": "Hello #猫[话题]# #狗[话题]# end", "imageList": []any{
-		map[string]any{"urlDefault": image, "infoList": []any{map[string]any{"imageScene": "H5_PRV", "url": "https://cdn.example/thumb.jpg"}}, "width": 120, "height": 240},
-		map[string]any{"urlDefault": image, "livePhoto": true, "width": 120, "height": 240, "stream": map[string]any{"h264": []any{}, "av1": []any{map[string]any{"masterUrl": "https://cdn.example/av1.mp4", "duration": 3000}, map[string]any{"masterUrl": "https://cdn.example/larger.mp4", "width": 9999}}, "h265": []any{map[string]any{"masterUrl": "https://cdn.example/hevc.mp4"}}}},
-		map[string]any{"urlDefault": image, "livePhoto": true, "stream": map[string]any{}},
-	}}
+	note := map[string]any{
+		"type":    "normal",
+		"title":   "album",
+		"desc":    "Hello #猫[话题]# #狗[话题]# end",
+		"tagList": []any{map[string]any{"name": "宠物"}, map[string]any{"name": "猫"}},
+		"imageList": []any{
+			map[string]any{"urlDefault": image, "infoList": []any{map[string]any{"imageScene": "H5_PRV", "url": "https://cdn.example/thumb.jpg"}}, "width": 120, "height": 240},
+			map[string]any{"urlDefault": "https://sns-webpic-qc.xhscdn.com/20261119/0123456789abcdef0123456789abcdef/notes_pre_post/1040g00831abc!nd_dft_wlteh_webp_3", "livePhoto": true, "width": 120, "height": 240, "stream": map[string]any{"h264": []any{}, "av1": []any{map[string]any{"masterUrl": "https://cdn.example/av1.mp4", "duration": 3000}, map[string]any{"masterUrl": "https://cdn.example/larger.mp4", "width": 9999, "height": 1000, "duration": 3000}}, "h265": []any{map[string]any{"masterUrl": "https://cdn.example/hevc.mp4"}}}},
+			map[string]any{"urlDefault": image, "livePhoto": true, "stream": map[string]any{}},
+		},
+	}
 	r, err := majorXHSParseNote(note)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := "https://sns-img-hw.xhscdn.com/trace/image?imageView2/format/jpg"
-	if r.Type != "image" || r.Content != "Hello#猫 #狗 end" || len(r.Media) != 2 {
+	raw := "https://ci.xiaohongshu.com/trace/image?imageView2/2/w/format/png"
+	rawPrePost := "https://ci.xiaohongshu.com/notes_pre_post/1040g00831abc?imageView2/2/w/format/png"
+	if r.Type != "image" || r.Content != "Hello#猫 #狗 end" || len(r.Media) != 2 || strings.Join(r.Tags, ",") != "宠物,猫,狗" {
 		t.Fatalf("wrong album: %#v", r)
 	}
-	if r.Media[0].URL != raw || r.Media[0].ThumbnailURL != "https://cdn.example/thumb.jpg" {
+	if r.Media[0].URL != raw || r.Media[0].ThumbnailURL != "https://cdn.example/thumb.jpg" || len(r.Media[0].BackupURLs) < 3 {
 		t.Fatalf("raw image reconstruction lost: %#v", r.Media[0])
 	}
 	live := r.Media[1]
-	if live.Kind != "livephoto" || live.URL != raw || live.VideoURL != "https://cdn.example/av1.mp4" || live.Width != 120 || live.Height != 240 || live.Duration != 3 {
+	if live.Kind != "livephoto" || live.URL != rawPrePost || live.VideoURL != "https://cdn.example/larger.mp4" || live.Width != 120 || live.Height != 240 || live.Duration != 3 {
 		t.Fatalf("live pairing/stream ordering lost: %#v", live)
 	}
 	if _, err = majorXHSParseNote(map[string]any{"type": "unknown", "imageList": note["imageList"]}); err == nil {
@@ -157,24 +164,34 @@ func TestXHSReferenceVideoSelectionAndThumbnail(t *testing.T) {
 	note := map[string]any{
 		"type": "video",
 		"imageList": []any{map[string]any{
-			"urlDefault": "https://cdn.example/cover.jpg!resize",
+			"urlDefault": "https://sns-webpic-qc.xhscdn.com/20261119/0123456789abcdef0123456789abcdef/spectrum/1040g0k031cover!nd_dft_wlteh_webp_3",
 			"urlPre":     "https://cdn.example/preview.jpg",
 		}},
-		"video": map[string]any{"media": map[string]any{"stream": map[string]any{
-			"h264": []any{
-				map[string]any{"masterUrl": "https://cdn.example/first.mp4", "width": 640, "height": 360, "duration": 12500, "backupUrls": []any{"https://cdn.example/backup.mp4"}},
-				map[string]any{"masterUrl": "https://cdn.example/larger.mp4", "width": 3840, "height": 2160},
-			},
-			"av1": []any{map[string]any{"masterUrl": "https://cdn.example/av1.mp4"}},
-		}}},
+		"video": map[string]any{
+			"consumer": map[string]any{"originVideoKey": "spectrum/1040g35830direct"},
+			"media": map[string]any{"stream": map[string]any{
+				"h264": []any{
+					map[string]any{"masterUrl": "https://cdn.example/first.mp4", "width": 640, "height": 360, "duration": 12500, "backupUrls": []any{"https://cdn.example/backup.mp4"}},
+					map[string]any{"masterUrl": "https://cdn.example/larger.mp4", "width": 3840, "height": 2160, "duration": 12500},
+				},
+				"av1": []any{map[string]any{"masterUrl": "https://cdn.example/av1.mp4"}},
+			}},
+		},
 	}
 	r, err := majorXHSParseNote(note)
 	if err != nil {
 		t.Fatal(err)
 	}
 	media := r.Media[0]
-	if media.URL != "https://cdn.example/first.mp4" || media.Width != 640 || media.Duration != 12.5 || media.ThumbnailURL != "https://cdn.example/cover.jpg!resize" || len(media.BackupURLs) != 1 {
-		t.Fatalf("video codec/order/thumbnail selection lost: %#v", media)
+	wantCover := "https://ci.xiaohongshu.com/spectrum/1040g0k031cover?imageView2/2/w/format/png"
+	if media.URL != "https://sns-video-bd.xhscdn.com/spectrum/1040g35830direct" || media.Width != 3840 || media.Duration != 12.5 || media.ThumbnailURL != wantCover || len(media.BackupURLs) < 3 {
+		t.Fatalf("origin video or unwatermarked cover selection lost: %#v", media)
+	}
+	// Fallback when originVideoKey is absent selects the highest resolution stream.
+	delete(note["video"].(map[string]any), "consumer")
+	rFallback, err := majorXHSParseNote(note)
+	if err != nil || rFallback.Media[0].URL != "https://cdn.example/larger.mp4" {
+		t.Fatalf("highest stream fallback failed: %#v %v", rFallback, err)
 	}
 	delete(note, "imageList")
 	if _, err = majorXHSParseNote(note); err == nil {

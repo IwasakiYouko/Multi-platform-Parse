@@ -1,15 +1,16 @@
 (() => {
   'use strict';
 
-  const DEFAULT_TEMPLATE = '{title}\n{author}\n{content}\n{url}';
+  const DEFAULT_TEMPLATE = '{title}\n{tags}\n{content}\n{url}';
   const SECRET_SENTINEL = '********';
 
   const STYLED_VARS = [
     { token: '{title}', label: '【标题】', desc: '带书名/方括号标题块' },
+    { token: '{tags}', label: '#话题标签', desc: '提取平台标签并自动剥离正文尾部重复标签' },
     { token: '{author}', label: '作者：昵称', desc: '带前缀作者行' },
-    { token: '{content}', label: '正文摘要', desc: '优先 Markdown，与标题相同时自动去重' },
-    { token: '{url}', label: '链接：URL', desc: '按全局去追踪策略格式化链接' },
-    { token: '{clean_url}', label: '净化链接', desc: '始终剥离分享追踪参数' },
+    { token: '{content}', label: '正文摘要', desc: '自动去重标题与尾部标签，超长自动摘要' },
+    { token: '{url}', label: '链接：URL', desc: '按标准直链策略输出纯净无追踪链接' },
+    { token: '{clean_url}', label: '净化链接', desc: '始终输出剥离追踪参数后的标准直链' },
     { token: '{platform}', label: '[平台名]', desc: '例如 [哔哩哔哩]' },
     { token: '{type}', label: '[类型]', desc: '例如 [视频] / [图集]' },
     { token: '{media_stats}', label: '媒体统计', desc: '例如 共 1 个视频' },
@@ -17,6 +18,7 @@
 
   const RAW_VARS = [
     { token: '{raw_title}', label: '纯标题' },
+    { token: '{raw_tags}', label: '纯标签' },
     { token: '{raw_author}', label: '纯作者' },
     { token: '{raw_content}', label: '纯正文' },
     { token: '{raw_url}', label: '纯链接' },
@@ -27,16 +29,16 @@
 
   const ALL_TOKENS = [
     '{raw_clean_url}', '{raw_platform}', '{raw_content}', '{raw_author}',
-    '{raw_title}', '{raw_type}', '{raw_url}', '{media_stats}',
+    '{raw_title}', '{raw_tags}', '{raw_type}', '{raw_url}', '{media_stats}',
     '{clean_url}', '{platform}', '{content}', '{author}',
-    '{title}', '{type}', '{url}',
+    '{title}', '{tags}', '{type}', '{url}',
   ];
 
   const TEMPLATE_PRESETS = [
-    { name: '标准完整', value: '{title}\n{author}\n{content}\n{url}' },
-    { name: '仅标题', value: '{title}' },
-    { name: '标题 + 链接', value: '{title}\n{url}' },
-    { name: '精简卡片', value: '{platform} {type}\n{title}\n{author}\n{media_stats}\n{clean_url}' },
+    { name: '标准名片 (默认)', value: '{title}\n{tags}\n{content}\n{url}' },
+    { name: '含作者名片', value: '{title}\n{author}\n{tags}\n{content}\n{url}' },
+    { name: '仅标题 + 链接', value: '{title}\n{url}' },
+    { name: '精简卡片', value: '{platform} {type}\n{title}\n{tags}\n{media_stats}\n{clean_url}' },
   ];
 
   const ROUTE_META = {
@@ -265,9 +267,21 @@
     const rawPlatform = sample.platform_name || '哔哩哔哩';
     const rawType = sample.type_label || '视频';
     const mediaStats = sample.media_stats || '';
+    const tagArr = Array.isArray(sample.tags) ? sample.tags : ['科技', '数码'];
+    const maxTags = state.draft && state.draft.media ? Number(state.draft.media.max_tags || 0) : 8;
+    const limitedTags = maxTags > 0 ? tagArr.slice(0, maxTags) : tagArr;
+    const styledTags = limitedTags.length ? limitedTags.map((t) => `#${t}`).join(' ') : '';
+    const rawTags = limitedTags.length ? limitedTags.join(' · ') : '';
+
+    const sumLimit = state.draft && state.draft.media ? Number(state.draft.media.summary_length || 0) : 300;
+    const effectiveSumLimit = (sumLimit > 0 && sumLimit <= 8000) ? sumLimit : 8000;
+    if (rawContent.length > effectiveSumLimit) {
+      rawContent = `${rawContent.slice(0, effectiveSumLimit)}…`;
+    }
 
     const values = {
       '{raw_title}': rawTitle,
+      '{raw_tags}': rawTags,
       '{raw_author}': rawAuthor,
       '{raw_content}': rawContent,
       '{raw_url}': displayUrl,
@@ -275,6 +289,7 @@
       '{raw_platform}': rawPlatform,
       '{raw_type}': rawType,
       '{media_stats}': mediaStats,
+      '{tags}': styledTags,
       '{title}': rawTitle ? `【${rawTitle}】` : '',
       '{author}': rawAuthor ? `作者：${rawAuthor}` : '',
       '{content}': rawContent,
@@ -578,6 +593,12 @@
     }
   }
 
+  function renderCookieAlertBanner(alerts) {
+    const list = Array.isArray(alerts) ? alerts : [];
+    if (list.length === 0) return '';
+    return `<div class="alert alert-warn">⚠️ 平台 Cookie 失效提醒：<strong>${list.map((a) => esc(platformName(a.platform))).join('、')}</strong> 的已存登录凭据疑似过期并已回退至游客通道，请前往「平台与消息模板」更新 Cookie。</div>`;
+  }
+
   function updateOverviewKPIsOnly() {
     const s = state.status || {};
     const elUptime = document.getElementById('kpi-uptime');
@@ -590,11 +611,41 @@
     if (elTasks) elTasks.textContent = `${s.active_tasks || 0} / ${s.queue_size || 0}`;
     const elCache = document.getElementById('kpi-cache');
     if (elCache) elCache.textContent = formatBytes(s.cache_bytes || 0);
+    const elCookieBanner = document.getElementById('overview-cookie-banner');
+    if (elCookieBanner) elCookieBanner.innerHTML = renderCookieAlertBanner(s.cookie_alerts);
+  }
+
+  function cookieAlertFor(platformId) {
+    const alerts = (state.status && Array.isArray(state.status.cookie_alerts)) ? state.status.cookie_alerts : [];
+    return alerts.find((a) => a.platform === platformId) || null;
+  }
+
+  function renderMsg2Mock(mode, count, platformLabel, authorLabel, fullTextInForward) {
+    if (mode === 'none') {
+      return '<div class="text-xs muted" style="margin-top:6px;">消息 2：无（单图或纯文本作品仅发送消息 1，避免重复刷屏）</div>';
+    }
+    if (mode === 'direct_video') {
+      return '<div class="chat-bubble chat-bubble-msg2"><div class="chat-msg-tag">消息 2 · 单视频直发</div>🎬 [高清无水印视频 · 群内点击直接播放]</div>';
+    }
+    if (mode === 'merged_forward') {
+      const sender = authorLabel ? `${platformLabel} · ${authorLabel}` : platformLabel;
+      return `
+        <div class="chat-bubble chat-bubble-forward">
+          <div class="chat-msg-tag">消息 2 · 合并转发卡片</div>
+          <div class="forward-title">聊天记录</div>
+          ${fullTextInForward ? `<div class="forward-line">${esc(sender)}: [完整未截断原文]</div>` : ''}
+          <div class="forward-line">${esc(sender)}: [共 ${Number(count || 2)} 项无水印原图/视频整合收纳]</div>
+          <div class="forward-footer">查看 ${Number(count || 2) + (fullTextInForward ? 1 : 0)} 条转发消息</div>
+        </div>
+      `;
+    }
+    return `<div class="chat-bubble chat-bubble-msg2"><div class="chat-msg-tag">消息 2 · 逐条发送</div>🎞️ [依次发送 ${Number(count || 2)} 项媒体]</div>`;
   }
 
   function buildOverviewHTML() {
     const s = state.status || {};
     const bots = Array.isArray(s.bots) ? s.bots : [];
+    const cookieAlerts = Array.isArray(s.cookie_alerts) ? s.cookie_alerts : [];
     const maxDisk = Math.max(1, Number(state.draft.media.max_disk_bytes || 1));
     const usedPct = Math.min(100, Math.round((Number(s.cache_bytes || 0) / maxDisk) * 100));
     const enabledPlatforms = Object.values(state.draft.platforms || {}).filter((p) => p.enabled).length;
@@ -603,6 +654,7 @@
     if (state.sandboxResult) {
       const r = state.sandboxResult.result || {};
       const rendered = state.sandboxResult.rendered || '';
+      const rTags = Array.isArray(r.tags) && r.tags.length ? r.tags.map((t) => `#${t}`).join(' ') : '(无)';
       sandboxOut = `
         <div class="grid-2" style="margin-top:14px;">
           <div class="card" style="background:var(--surface-alt);padding:14px;">
@@ -616,16 +668,19 @@
             <div class="stack-sm text-sm">
               <div><span class="muted">标题：</span>${esc(r.title || '(无)')}</div>
               <div><span class="muted">作者：</span>${esc(r.author || '(无)')}</div>
-              <div><span class="muted">净化链接：</span><span class="mono text-xs">${esc(state.sandboxResult.clean_url || r.source_url || '')}</span></div>
+              <div><span class="muted">标签：</span>${esc(rTags)}</div>
+              <div><span class="muted">标准直链：</span><span class="mono text-xs">${esc(state.sandboxResult.clean_url || r.canonical_url || r.source_url || '')}</span></div>
               <div><span class="muted">生效模板：</span><code class="mono text-xs">${esc(state.sandboxResult.effective_template || '(不输出文本)')}</code></div>
+              ${r.cookie_expired ? '<div class="text-xs" style="color:var(--warn);">⚠️ 检测到当前配置的平台 Cookie 已失效，本次已自动回退游客通道</div>' : ''}
             </div>
           </div>
           <div class="chat-preview-box">
             <div class="chat-preview-header">
-              <span>OneBot 投递消息仿真预览</span>
-              <span>${state.sandboxResult.show_cover ? '附带封面图' : '无封面图'}</span>
+              <span>OneBot 双消息投递仿真预览</span>
+              <span>${state.sandboxResult.show_cover ? '消息 1 含封面图' : '无封面图'}</span>
             </div>
-            <div class="chat-bubble">${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${state.sandboxResult.show_cover && r.type === 'video' ? '<div class="chat-cover-mock">🖼️ [视频封面图]</div>\n' : ''}${rendered ? esc(rendered) : '<span class="muted">（当前模板模式下仅发送媒体，不输出文本块）</span>'}</div>
+            <div class="chat-bubble"><div class="chat-msg-tag">消息 1 · 作品导览名片</div>${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${state.sandboxResult.show_cover ? '<div class="chat-cover-mock">🖼️ [无水印高清封面图]</div>\n' : ''}${rendered ? esc(rendered) : '<span class="muted">（当前模板模式下仅发送媒体，不输出文本块）</span>'}</div>
+            ${renderMsg2Mock(state.sandboxResult.message2_mode || 'none', state.sandboxResult.visual_items || 0, platformName(r.platform), r.author || '', Boolean(state.sandboxResult.full_text_forward))}
           </div>
         </div>
       `;
@@ -644,8 +699,11 @@
           </tr>
         `).join('');
 
+    const cookieBanner = renderCookieAlertBanner(cookieAlerts);
+
     return `
       ${s.cleanup_error ? `<div class="alert alert-warn">缓存清理提示：${esc(s.cleanup_error)}</div>` : ''}
+      <div id="overview-cookie-banner">${cookieBanner}</div>
       <section class="kpi-grid">
         <div class="kpi-card">
           <span class="kpi-label">引擎运行时长</span>
@@ -891,7 +949,10 @@
       const tplBadge = pol.template_mode === 'custom'
         ? '<span class="badge badge-info">专属消息模板</span>'
         : (pol.template_mode === 'none' ? '<span class="badge badge-warn">仅发送媒体</span>' : '<span class="badge badge-neutral">跟随全局模板</span>');
-      const cookieBadge = pol.cookie ? '<span class="badge badge-success">已配 Cookie</span>' : '';
+      const alert = cookieAlertFor(p.id);
+      const cookieBadge = alert
+        ? '<span class="badge badge-warn" title="检测到 Cookie 疑似失效，已回退游客通道">⚠️ Cookie 疑似失效</span>'
+        : (pol.cookie ? '<span class="badge badge-success">已配 Cookie</span>' : '');
       const overseasBadge = pol.overseas ? '<span class="badge badge-info">海外分流</span>' : '';
       const nsfwBadge = pol.nsfw_blocked ? '<span class="badge badge-danger">NSFW 拦截</span>' : '';
       const coverBadge = pol.cover_mode === 'off' ? '<span class="badge badge-neutral">无封面</span>' : (pol.cover_mode === 'on' ? '<span class="badge badge-info">强制封面</span>' : '');
@@ -937,11 +998,11 @@
           <div class="row-gap-sm">${presetBtns}</div>
         </div>
 
-        <div class="grid-3" style="margin-bottom:16px;">
+        <div class="grid-2" style="margin-bottom:14px;">
           <div class="switch-row">
             <div class="switch-row-text">
-              <strong>输出文本信息块</strong>
-              <span>全局默认附带标题/作者/链接文本</span>
+              <strong>输出文本信息块（消息 1）</strong>
+              <span>全局默认附带标题/标签/正文/链接文本</span>
             </div>
             <label class="switch">
               <input type="checkbox" aria-label="输出文本信息块" data-bind="media.show_info" ${media.show_info ? 'checked' : ''}>
@@ -950,24 +1011,45 @@
           </div>
           <div class="switch-row">
             <div class="switch-row-text">
-              <strong>附带视频封面图</strong>
-              <span>图文首条消息展示视频高清封面</span>
+              <strong>消息 1 附带高清无水印封面</strong>
+              <span>优先拉取平台官方无水印封面或首图</span>
             </div>
             <label class="switch">
-              <input type="checkbox" aria-label="附带视频封面图" data-bind="media.show_cover" ${media.show_cover ? 'checked' : ''}>
+              <input type="checkbox" aria-label="消息 1 附带高清无水印封面" data-bind="media.show_cover" ${media.show_cover ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
           <div class="switch-row">
             <div class="switch-row-text">
-              <strong>自动净化分享追踪参数</strong>
-              <span>剥离 vd_source / spm_id_from / utm_* 等尾巴</span>
+              <strong>标准直链重构与去追踪参数</strong>
+              <span>还原官方纯净直链，剔除全平台追踪与分享指纹</span>
             </div>
             <label class="switch">
-              <input type="checkbox" aria-label="自动净化分享追踪参数" data-bind="media.clean_url" ${media.clean_url ? 'checked' : ''}>
+              <input type="checkbox" aria-label="标准直链重构与去追踪参数" data-bind="media.clean_url" ${media.clean_url ? 'checked' : ''}>
               <span class="switch-slider"></span>
             </label>
           </div>
+          <div class="switch-row">
+            <div class="switch-row-text">
+              <strong>消息 2 多媒体自动合并转发</strong>
+              <span>多图/多视频/实况图整合进一条聊天记录卡片发出</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" aria-label="消息 2 多媒体自动合并转发" data-bind="media.forward_enabled" ${media.forward_enabled !== false ? 'checked' : ''}>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="grid-2" style="margin-bottom:16px;">
+          <label class="field">
+            <span class="field-label">消息 1 正文摘要字数上限（0 表示不截断，超长原文自动收入合并转发）</span>
+            <input type="number" min="0" max="4000" data-bind-num="media.summary_length" value="${Number(media.summary_length ?? 300)}">
+          </label>
+          <label class="field">
+            <span class="field-label">最大展示话题标签数 <code>{tags}</code>（0 表示不限制）</span>
+            <input type="number" min="0" max="50" data-bind-num="media.max_tags" value="${Number(media.max_tags ?? 8)}">
+          </label>
         </div>
 
         <div class="grid-2">
@@ -977,10 +1059,11 @@
           </div>
           <div class="chat-preview-box">
             <div class="chat-preview-header">
-              <span>全局默认消息实时预览</span>
-              <span>标题与正文重复时自动去重</span>
+              <span>双消息结构实时预览</span>
+              <span>消息 1 名片 + 消息 2 媒体/合并转发</span>
             </div>
-            <div id="global-template-preview" class="chat-bubble">${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${media.show_cover ? '<div class="chat-cover-mock">🖼️ [视频封面图]</div>\n' : ''}${globalPreview ? esc(globalPreview) : '<span class="muted">（已关闭全局文本信息输出）</span>'}</div>
+            <div id="global-template-preview" class="chat-bubble"><div class="chat-msg-tag">消息 1 · 作品导览名片</div>${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${media.show_cover ? '<div class="chat-cover-mock">🖼️ [高清无水印封面图]</div>\n' : ''}${globalPreview ? esc(globalPreview) : '<span class="muted">（已关闭全局文本信息输出）</span>'}</div>
+            ${renderMsg2Mock(media.forward_enabled !== false ? 'merged_forward' : 'sequential', 4, '小红书', '示例创作者', false)}
           </div>
         </div>
       </section>
@@ -1048,17 +1131,22 @@
       ? ''
       : (mode === 'custom' ? (pol.message_template || '') : (state.draft.media.show_info ? (state.draft.media.message_template || DEFAULT_TEMPLATE) : ''));
 
+    const primaryType = (meta.types && meta.types[0]) || 'video';
+    const isAlbumSample = primaryType === 'image' || primaryType === 'livephoto';
     const sample = {
       platform_name: meta.name,
-      type_label: typeName((meta.types && meta.types[0]) || 'video'),
+      type_label: typeName(primaryType),
       title: `${meta.name}示例作品标题`,
       author: '示例创作者',
       content: `${meta.name}正文内容摘要，支持任意组合标题、作者、统计与自定义文字。`,
       url: `https://${(meta.domains && meta.domains[0]) || 'example.com'}/post/10086?utm_source=share`,
       clean_url: `https://${(meta.domains && meta.domains[0]) || 'example.com'}/post/10086`,
-      media_stats: '共 1 个视频',
+      media_stats: isAlbumSample ? '共 3 张图片' : '共 1 个视频',
     };
     const previewText = renderLocalPreview(effectiveTpl, sample, state.draft.media.clean_url);
+    const drawerMsg2Mode = !state.draft.media.auto_download
+      ? 'none'
+      : (isAlbumSample ? (state.draft.media.forward_enabled !== false ? 'merged_forward' : 'sequential') : 'direct_video');
 
     const presetBtns = TEMPLATE_PRESETS.map((pr) =>
       `<button type="button" class="btn btn-secondary btn-xs" data-action="apply-drawer-preset" data-preset="${esc(pr.value)}">${esc(pr.name)}</button>`
@@ -1141,10 +1229,11 @@
 
       <div class="chat-preview-box">
         <div class="chat-preview-header">
-          <span>${esc(meta.name)} 投递效果实时预览</span>
+          <span>${esc(meta.name)} 双消息投递实时预览</span>
           <span>${mode === 'inherit' ? '继承全局' : (mode === 'custom' ? '专属定制' : '无文本模式')}</span>
         </div>
-        <div id="drawer-live-preview" class="chat-bubble">${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${effectiveShowCover ? '<div class="chat-cover-mock">🖼️ [封面预览]</div>\n' : ''}${previewText ? esc(previewText) : '<span class="muted">（仅发送图片/视频媒体，不附带文本消息块）</span>'}</div>
+        <div id="drawer-live-preview" class="chat-bubble"><div class="chat-msg-tag">消息 1 · 作品导览名片</div>${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${effectiveShowCover ? '<div class="chat-cover-mock">🖼️ [无水印封面预览]</div>\n' : ''}${previewText ? esc(previewText) : '<span class="muted">（仅发送图片/视频媒体，不附带文本消息块）</span>'}</div>
+        ${renderMsg2Mock(drawerMsg2Mode, isAlbumSample ? 3 : 1, meta.name, '示例创作者', false)}
       </div>
 
       <label class="field">
@@ -1155,7 +1244,9 @@
       <div class="field">
         <div class="row-between">
           <span class="field-label">平台登录 Cookie（可选，AES-GCM 加密存储）</span>
-          ${hasSavedCookie ? '<span class="badge badge-success">已加密保存 Cookie</span>' : '<span class="badge badge-neutral">未配置</span>'}
+          ${cookieAlertFor(platformId)
+            ? '<span class="badge badge-warn">⚠️ Cookie 疑似已失效</span>'
+            : (hasSavedCookie ? '<span class="badge badge-success">已加密保存 Cookie</span>' : '<span class="badge badge-neutral">未配置</span>')}
         </div>
         <textarea rows="3" class="mono text-xs" data-drawer-field="cookie" placeholder="如需高画质或登录态解析，请粘贴 Netscape 或 Header 格式 Cookie；留空则使用匿名解析">${esc(pol.cookie || '')}</textarea>
         <div class="row-between">
@@ -1276,16 +1367,43 @@
             </label>
           </div>
 
-          <div class="grid-2">
+          <div class="switch-row">
+            <div class="switch-row-text">
+              <strong id="label-policy-emoji">处理中自动贴表情回应（👀）</strong>
+              <span>收到有效链接入队时在原消息贴轻量表情反馈，处理完毕后自动移除</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" aria-labelledby="label-policy-emoji" data-bind="policy.emoji_reaction" ${pol.emoji_reaction !== false ? 'checked' : ''}>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="switch-row">
+            <div class="switch-row-text">
+              <strong id="label-policy-silent-err">群聊解析失败静默降噪</strong>
+              <span>开启后群聊内解析失败仅记录后台日志不公开发报错，私聊仍回复详细原因</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" aria-labelledby="label-policy-silent-err" data-bind="policy.group_silent_error" ${pol.group_silent_error ? 'checked' : ''}>
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="grid-3">
             <label class="field">
-              <span class="field-label">同一链接防刷屏冷却（秒）</span>
+              <span class="field-label">同作品防刷屏冷却（秒）</span>
               <input type="number" min="0" max="86400" data-bind-num="policy.cooldown_seconds" value="${Number(pol.cooldown_seconds || 0)}">
+            </label>
+            <label class="field">
+              <span class="field-label">单条消息最大解析链接数</span>
+              <input type="number" min="1" max="32" data-bind-num="policy.max_links_per_msg" value="${Number(pol.max_links_per_msg || 3)}">
             </label>
             <label class="field">
               <span class="field-label">默认策略拒绝文案</span>
               <input type="text" data-bind="policy.reject_text" value="${esc(pol.reject_text || '')}">
             </label>
           </div>
+          <span class="field-hint">提示：群友发言包含 <code>-np</code>、<code>不解析</code> 或以 <code>/</code> 开头时将自动免解析跳过；合并转发聊天记录卡片不会触发套娃解析。</span>
 
           <label class="field">
             <span class="field-label">群聊白名单（填写后<strong>仅白名单内群号</strong>生效，每行一个群号）</span>
@@ -1663,10 +1781,10 @@
     }
 
     if (rawObj.media && typeof rawObj.media === 'object') {
-      for (const k of ['max_bytes', 'max_duration_seconds', 'max_images', 'quality', 'concurrency', 'transcode_concurrency', 'max_disk_bytes']) {
+      for (const k of ['max_bytes', 'max_duration_seconds', 'max_images', 'quality', 'concurrency', 'transcode_concurrency', 'max_disk_bytes', 'summary_length', 'max_tags']) {
         if (typeof rawObj.media[k] === 'number') next.media[k] = rawObj.media[k];
       }
-      for (const k of ['auto_download', 'show_cover', 'show_info', 'clean_url']) {
+      for (const k of ['auto_download', 'show_cover', 'show_info', 'clean_url', 'forward_enabled']) {
         if (typeof rawObj.media[k] === 'boolean') next.media[k] = rawObj.media[k];
       }
       for (const k of ['message_template', 'oversize_mode', 'transport']) {
@@ -1679,10 +1797,11 @@
     }
 
     if (rawObj.policy && typeof rawObj.policy === 'object') {
-      for (const k of ['enabled', 'private_enabled', 'group_reply']) {
+      for (const k of ['enabled', 'private_enabled', 'group_reply', 'emoji_reaction', 'group_silent_error']) {
         if (typeof rawObj.policy[k] === 'boolean') next.policy[k] = rawObj.policy[k];
       }
       if (typeof rawObj.policy.cooldown_seconds === 'number') next.policy.cooldown_seconds = rawObj.policy.cooldown_seconds;
+      if (typeof rawObj.policy.max_links_per_msg === 'number') next.policy.max_links_per_msg = rawObj.policy.max_links_per_msg;
       if (typeof rawObj.policy.reject_text === 'string') next.policy.reject_text = rawObj.policy.reject_text;
       if (Array.isArray(rawObj.policy.group_whitelist)) next.policy.group_whitelist = rawObj.policy.group_whitelist.map(Number).filter((n) => n > 0);
       if (Array.isArray(rawObj.policy.group_blacklist)) next.policy.group_blacklist = rawObj.policy.group_blacklist.map(Number).filter((n) => n > 0);
@@ -2240,7 +2359,7 @@
             const coverMode = pol.cover_mode || 'inherit';
             const showCover = coverMode === 'on' ? true : (coverMode === 'off' ? false : state.draft.media.show_cover);
             const txt = renderLocalPreview(pol.message_template || '', sample, state.draft.media.clean_url);
-            previewEl.innerHTML = `${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${showCover ? '<div class="chat-cover-mock">🖼️ [封面预览]</div>\n' : ''}${txt ? esc(txt) : '<span class="muted">（模板为空，保存前请填写内容或切换为仅发媒体）</span>'}`;
+            previewEl.innerHTML = `<div class="chat-msg-tag">消息 1 · 作品导览名片</div>${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${showCover ? '<div class="chat-cover-mock">🖼️ [无水印封面预览]</div>\n' : ''}${txt ? esc(txt) : '<span class="muted">（模板为空，保存前请填写内容或切换为仅发媒体）</span>'}`;
           }
         }
         return;
@@ -2251,7 +2370,7 @@
         const val = el.type === 'checkbox' ? el.checked : el.value;
         setNestedValue(state.draft, path, val);
         updateDirtyBar();
-        if (path === 'media.transport') {
+        if (path === 'media.transport' || path === 'media.forward_enabled') {
           renderRoute();
         } else if (path === 'media.message_template' || path === 'media.show_info' || path === 'media.show_cover' || path === 'media.clean_url') {
           if (path !== 'media.message_template') {
@@ -2272,7 +2391,7 @@
               const txt = state.draft.media.show_info
                 ? renderLocalPreview(state.draft.media.message_template || DEFAULT_TEMPLATE, sample, state.draft.media.clean_url)
                 : '';
-              previewEl.innerHTML = `${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${state.draft.media.show_cover ? '<div class="chat-cover-mock">🖼️ [视频封面图]</div>\n' : ''}${txt ? esc(txt) : '<span class="muted">（已关闭全局文本信息输出）</span>'}`;
+              previewEl.innerHTML = `<div class="chat-msg-tag">消息 1 · 作品导览名片</div>${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${state.draft.media.show_cover ? '<div class="chat-cover-mock">🖼️ [高清无水印封面图]</div>\n' : ''}${txt ? esc(txt) : '<span class="muted">（已关闭全局文本信息输出）</span>'}`;
             }
           }
         }
@@ -2284,6 +2403,25 @@
         if (!Number.isNaN(n)) {
           setNestedValue(state.draft, el.dataset.bindNum, Math.trunc(n));
           updateDirtyBar();
+          if (el.dataset.bindNum === 'media.summary_length' || el.dataset.bindNum === 'media.max_tags') {
+            const previewEl = $('global-template-preview');
+            if (previewEl) {
+              const sample = {
+                platform_name: '哔哩哔哩',
+                type_label: '视频',
+                title: '【4K】2026 年度技术架构演进与工程实践总结',
+                author: '技术极客UP',
+                content: '本期视频深入讲解多平台消息块自定义排版、Alpine 镜像瘦身与高可靠媒体流水线。',
+                url: 'https://www.bilibili.com/video/BV1GJ411x7h7?p=1&vd_source=track123',
+                clean_url: 'https://www.bilibili.com/video/BV1GJ411x7h7?p=1',
+                media_stats: '共 1 个视频',
+              };
+              const txt = state.draft.media.show_info
+                ? renderLocalPreview(state.draft.media.message_template || DEFAULT_TEMPLATE, sample, state.draft.media.clean_url)
+                : '';
+              previewEl.innerHTML = `<div class="chat-msg-tag">消息 1 · 作品导览名片</div>${state.draft.policy.group_reply ? '<div class="chat-reply-quote">回复 群成员的消息</div>' : ''}${state.draft.media.show_cover ? '<div class="chat-cover-mock">🖼️ [高清无水印封面图]</div>\n' : ''}${txt ? esc(txt) : '<span class="muted">（已关闭全局文本信息输出）</span>'}`;
+            }
+          }
         }
         return;
       }

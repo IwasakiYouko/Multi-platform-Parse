@@ -173,6 +173,11 @@ func mainlandWeibo(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 	// fetch another mobile API, or append the retweet's text to the outer post.
 	r.Content = socialWeiboText(strings.ReplaceAll(status.TextRaw, Text(status.PageInfo["short_url"]), ""))
 	r.Author = status.User.ScreenName
+	for _, m := range socialWeiboHashtag.FindAllString(status.TextRaw, -1) {
+		if tag := strings.Trim(strings.TrimSpace(m), "#"); tag != "" {
+			r.Tags = append(r.Tags, tag)
+		}
+	}
 	if len(status.PicInfos) == 0 && Text(status.PageInfo["object_type"]) == "video" {
 		playback := Array(Path(status.PageInfo, "media_info", "playback_list"))
 		if len(playback) > 0 {

@@ -245,7 +245,7 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 	if cfg.Media.MaxBytes < 1024 || cfg.Media.MaxBytes > maxNativeBytes || cfg.Media.MaxDiskBytes < cfg.Media.MaxBytes || cfg.Media.MaxImages < 1 || cfg.Media.MaxImages > 200 || cfg.Media.MaxDurationSeconds < 1 || cfg.Media.MaxDurationSeconds > 86400 || cfg.Media.Concurrency < 1 || cfg.Media.Concurrency > 16 || cfg.Media.TranscodeConcurrency < 1 || cfg.Media.TranscodeConcurrency > 4 || (cfg.Media.OversizeMode != "file" && cfg.Media.OversizeMode != "link") {
 		return nil, permanentError(errors.New("无效媒体资源限制"))
 	}
-	if len(result.Media) == 0 && result.Extraction == nil {
+	if len(result.Media) == 0 && result.Extraction == nil && strings.TrimSpace(result.CoverURL) == "" {
 		return nil, nil
 	}
 	if len(result.Media) > cfg.Media.MaxImages+16 {
@@ -304,6 +304,16 @@ func (m *Manager) Prepare(ctx context.Context, cfg model.Config, result model.Pa
 		if err != nil {
 			return nil, err
 		}
+	} else if len(result.Media) == 0 && strings.TrimSpace(result.CoverURL) != "" {
+		cover, coverErr := p.optionalExtractionCover(ctx, result.CoverURL, mediaHeaders(result, model.Media{}))
+		if coverErr != nil {
+			return nil, coverErr
+		}
+		if cover.Path == "" {
+			return nil, nil
+		}
+		cover.Kind = "cover"
+		artifacts = append(artifacts, cover)
 	} else {
 		for _, item := range result.Media {
 			if ctx.Err() != nil {
