@@ -82,8 +82,16 @@ func mainlandXiaoheihe(ctx context.Context, c *http.Client, raw, _ string) (*mod
 		return nil, fmt.Errorf("小黑盒未返回帖子正文")
 	}
 	r := mainlandResult("xiaoheihe", raw)
+	r.CanonicalURL = "https://www.xiaoheihe.cn/app/bbs/link/" + url.PathEscape(id)
 	r.Title = Text(link["title"])
 	r.Author = mainlandFirst(Path(link, "user", "username"), Path(link, "user", "nickname"))
+	for _, field := range []string{"topics", "topic_list"} {
+		for _, item := range Array(link[field]) {
+			if name := strings.TrimSpace(mainlandFirst(Path(item, "name"), Path(item, "topic_name"))); name != "" {
+				r.Tags = append(r.Tags, name)
+			}
+		}
+	}
 	if mainlandXHHTruthy(link["has_video"]) {
 		r.Type = "video"
 		r.Content = Text(link["text"])

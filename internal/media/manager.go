@@ -25,8 +25,8 @@ const maxNativeBytes int64 = 4 << 30
 const userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 var (
-	errInvalidReservation = errors.New("无效磁盘预留")
-	errMediaDiskLimit = errors.New("媒体缓存达到磁盘上限，请清理缓存或提高磁盘限制")
+	errInvalidReservation      = errors.New("无效磁盘预留")
+	errMediaDiskLimit          = errors.New("媒体缓存达到磁盘上限，请清理缓存或提高磁盘限制")
 	errMediaAccountingOverflow = errors.New("媒体磁盘计数溢出")
 )
 

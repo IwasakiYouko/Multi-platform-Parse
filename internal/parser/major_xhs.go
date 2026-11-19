@@ -65,7 +65,11 @@ func majorXHS(ctx context.Context, c *http.Client, raw, cookie string) (*model.P
 			return nil, err
 		}
 		r.SourceURL = source
-		r.CanonicalURL = final
+		if resolvedID := majorFirstText(majorXHSID(final), id); resolvedID != "" {
+			r.CanonicalURL = "https://www.xiaohongshu.com/explore/" + resolvedID
+		} else {
+			r.CanonicalURL = final
+		}
 		return r, nil
 	}
 	hasCookie := strings.TrimSpace(cookie) != ""
@@ -122,8 +126,8 @@ func majorXHSID(raw string) string {
 		return ""
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) > 1 && (parts[0] == "explore" || parts[0] == "discovery" && len(parts) > 2 && parts[1] == "item") {
-		return path.Base(u.Path)
+	if len(parts) > 1 && (parts[0] == "explore" || parts[0] == "discovery" && len(parts) > 2 && parts[1] == "item" || parts[0] == "user" && len(parts) > 3 && parts[1] == "profile") {
+		return path.Base(strings.TrimRight(u.Path, "/"))
 	}
 	return ""
 }

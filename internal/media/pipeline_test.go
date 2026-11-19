@@ -234,3 +234,80 @@ func TestNativeVideoUsesOfficialCoverWithoutQuotaLeak(t *testing.T) {
 		t.Fatalf("official cover replacement leaked quota: used=%d want=%d", used, videoStat.Size()+thumbStat.Size())
 	}
 }
+
+func TestPureGoWebPTallImagePreservesFullResolution(t *testing.T) {
+	tallWebP := generateMedia(t, "tall.webp", "-f", "lavfi", "-i", "color=c=navy:s=120x5000:d=0.1", "-frames:v", "1", "-c:v", "libwebp")
+	p := newPreparation(t)
+	p.client = fixtureClient(map[string][]byte{"/tall.webp": tallWebP})
+	artifact, err := p.prepareItem(context.Background(), model.Media{Kind: "image", URL: "https://cdn.example/tall.webp"}, nil)
+	if err != nil {
+		t.Fatalf("pure-Go tall WebP decode failed: %v", err)
+	}
+	if artifact.Width != 120 || artifact.Height != 5000 {
+		t.Fatalf("tall WebP resolution altered: got %dx%d, want 120x5000", artifact.Width, artifact.Height)
+	}
+	stat, err := os.Stat(artifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used, _ := p.manager.Usage(); used != stat.Size() || p.bytes != stat.Size() {
+		t.Fatalf("tall WebP disk accounting mismatch: used=%d prep=%d file=%d", used, p.bytes, stat.Size())
+	}
+}
+
+func TestDASHVideoAudioBackupURLFallback(t *testing.T) {
+	videoOnly := generateMedia(t, "dash-v.mp4", "-f", "lavfi", "-i", "color=c=teal:s=640x360:r=10:d=0.8", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p")
+	audioGood := generateMedia(t, "dash-a.m4a", "-f", "lavfi", "-i", "sine=frequency=520:duration=0.8", "-vn", "-c:a", "aac")
+	p := newPreparation(t)
+	hits := map[string]int{}
+	p.client = &http.Client{Transport: fixtureTransport(func(r *http.Request) (*http.Response, error) {
+		hits[r.URL.Path]++
+		switch r.URL.Path {
+		case "/dash-v.mp4":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(videoOnly)), ContentLength: int64(len(videoOnly)), Header: make(http.Header), Request: r}, nil
+		case "/bad-audio.m4s":
+			return &http.Response{StatusCode: 502, Body: io.NopCloser(bytes.NewReader([]byte("bad gateway"))), ContentLength: -1, Header: make(http.Header), Request: r}, nil
+		case "/backup-audio.m4s":
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(audioGood)), ContentLength: int64(len(audioGood)), Header: make(http.Header), Request: r}, nil
+		default:
+			return &http.Response{StatusCode: 404, Body: io.NopCloser(bytes.NewReader(nil)), ContentLength: -1, Header: make(http.Header), Request: r}, nil
+		}
+	})}
+	artifact, err := p.prepareItem(context.Background(), model.Media{
+		Kind:            "video",
+		URL:             "https://upos.bilivideo.com/dash-v.mp4",
+		AudioURL:        "https://xy1.mcdn.bilivideo.cn/bad-audio.m4s",
+		AudioBackupURLs: []string{"https://upos.bilivideo.com/backup-audio.m4s"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("AudioBackupURLs fallback failed: %v", err)
+	}
+	if hits["/bad-audio.m4s"] != 1 || hits["/backup-audio.m4s"] != 1 {
+		t.Fatalf("unexpected audio URL hit counts: %+v", hits)
+	}
+	vStat, _ := os.Stat(artifact.Path)
+	tStat, _ := os.Stat(artifact.ThumbPath)
+	if used, _ := p.manager.Usage(); used != vStat.Size()+tStat.Size() {
+		t.Fatalf("AudioBackupURLs fallback leaked quota: used=%d want=%d", used, vStat.Size()+tStat.Size())
+	}
+}
+
+func TestAnimatedWebPExtractsFirstFrameCleanly(t *testing.T) {
+	animWebP := generateMedia(t, "anim.webp", "-f", "lavfi", "-i", "color=c=orange:s=96x72:r=5:d=0.6", "-c:v", "libwebp_anim", "-loop", "0")
+	p := newPreparation(t)
+	p.client = fixtureClient(map[string][]byte{"/anim.webp": animWebP})
+	artifact, err := p.prepareItem(context.Background(), model.Media{Kind: "image", URL: "https://cdn.example/anim.webp"}, nil)
+	if err != nil {
+		t.Fatalf("animated WebP first-frame decode failed: %v", err)
+	}
+	if artifact.Width != 96 || artifact.Height != 72 {
+		t.Fatalf("animated WebP dimensions = %dx%d, want 96x72", artifact.Width, artifact.Height)
+	}
+	stat, err := os.Stat(artifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used, _ := p.manager.Usage(); used != stat.Size() || p.bytes != stat.Size() {
+		t.Fatalf("animated WebP disk accounting mismatch: used=%d prep=%d file=%d", used, p.bytes, stat.Size())
+	}
+}

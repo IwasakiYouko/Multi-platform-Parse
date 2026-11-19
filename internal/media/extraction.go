@@ -29,7 +29,7 @@ func (p *preparation) prepareExtracted(ctx context.Context, result model.ParseRe
 		item = result.Media[0]
 	}
 	// Metadata URLs are references, not another download request.
-	item.URL, item.AudioURL, item.VideoURL, item.BackupURLs = "", "", "", nil
+	item.URL, item.AudioURL, item.VideoURL, item.BackupURLs, item.AudioBackupURLs, item.VideoBackupURLs = "", "", "", nil, nil, nil
 	headers := mediaHeaders(result, item)
 	artifacts := make([]model.Artifact, 0, len(paths))
 	for _, path := range paths {

@@ -585,3 +585,84 @@ func TestDeleteCacheEntryAndPreview(t *testing.T) {
 		t.Fatalf("Preview failed: %+v %v", res, err)
 	}
 }
+
+func TestDeliverSingleImageLongArticleEmitsTextMergedForward(t *testing.T) {
+	x := newDeliveryHarness(t, "file")
+	entry := x.entry(t, model.Artifact{Kind: "image", Path: "single-cover.jpg", Size: 10})
+	para := strings.Repeat("这是一篇深度技术长文段落内容。", 60) // 900 runes per paragraph
+	entry.Result.Content = strings.Join([]string{para, para, para}, "\n\n")
+
+	result, _ := x.start(t, &entry)
+	// Message 1: Single cover image + truncated summary card
+	msg1 := x.next(t)
+	deliveryTypes(t, msg1, "image,text")
+	x.location(t, msg1.Params.Message[0].Data["file"], entry.Files[0].Path)
+	msg1Text, _ := msg1.Params.Message[1].Data["text"].(string)
+	if !strings.Contains(msg1Text, "…\n链接：") {
+		t.Fatalf("expected truncated summary in Message 1, got %q", msg1Text)
+	}
+	x.ack(t, msg1, 0)
+
+	// Message 2: Full-Text Merged Forward Reader split cleanly into paragraph nodes (<= 1500 runes each) without duplicating the single image!
+	fwd := x.next(t)
+	if fwd.Action != "send_group_forward_msg" || len(fwd.Params.Messages) != 3 {
+		t.Fatalf("expected 3-node full-text send_group_forward_msg, got action=%q len=%d", fwd.Action, len(fwd.Params.Messages))
+	}
+	for i, node := range fwd.Params.Messages {
+		seg := forwardNodeSegment(t, node)
+		if seg.Type != "text" {
+			t.Fatalf("node[%d] expected text segment, got %q", i, seg.Type)
+		}
+	}
+	x.ack(t, fwd, 0)
+
+	if err := deliveryResult(t, result); err != nil {
+		t.Fatalf("long-article full-text forward delivery failed: %v", err)
+	}
+	x.none(t)
+}
+
+func TestDeliverBatchedMixedForwardPreservesAckedProgress(t *testing.T) {
+	x := newDeliveryHarness(t, "file")
+	artifacts := make([]model.Artifact, 0, 202)
+	for i := 0; i < 201; i++ {
+		artifacts = append(artifacts, model.Artifact{Kind: "image", Path: "img-" + time.Duration(i).String() + ".jpg", Size: 10})
+	}
+	artifacts = append(artifacts, model.Artifact{Kind: "video", Path: "tail-vid.mp4", ThumbPath: "tail-thumb.jpg", Size: 10})
+	entry := x.entry(t, artifacts...)
+
+	result, _ := x.start(t, &entry)
+	msg1 := x.next(t)
+	deliveryTypes(t, msg1, "image,text")
+	x.ack(t, msg1, 0)
+
+	// Batch 1 (nodes 0..199: 200 images) succeeds.
+	batch1 := x.next(t)
+	if batch1.Action != "send_group_forward_msg" || len(batch1.Params.Messages) != 200 {
+		t.Fatalf("expected 200-node batch 1, got action=%q len=%d", batch1.Action, len(batch1.Params.Messages))
+	}
+	x.ack(t, batch1, 0)
+
+	// Batch 2 (nodes 200..201: 1 image + 1 video) is rejected by OneBot due to mixed video.
+	batch2 := x.next(t)
+	if batch2.Action != "send_group_forward_msg" || len(batch2.Params.Messages) != 2 {
+		t.Fatalf("expected 2-node batch 2, got action=%q len=%d", batch2.Action, len(batch2.Params.Messages))
+	}
+	x.ack(t, batch2, 1200)
+
+	// Recovery must send ONLY the 1 unacknowledged image + 1 unacknowledged video, never resending batch 1!
+	remImg := x.next(t)
+	deliveryTypes(t, remImg, "image")
+	x.location(t, remImg.Params.Message[0].Data["file"], entry.Files[200].Path)
+	x.ack(t, remImg, 0)
+
+	remVid := x.next(t)
+	deliveryTypes(t, remVid, "video")
+	x.location(t, remVid.Params.Message[0].Data["file"], entry.Files[201].Path)
+	x.ack(t, remVid, 0)
+
+	if err := deliveryResult(t, result); err != nil {
+		t.Fatalf("batched mixed forward progress recovery failed: %v", err)
+	}
+	x.none(t)
+}

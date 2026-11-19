@@ -1156,7 +1156,46 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 		return s.sender.UploadFile(ctx, target, location, filepath.Base(up.path))
 	}
 
-	// Message 2: Single media direct (preserving sequence with uploads) OR Multi-media merged forward.
+	nickname := forwardNickname(r)
+	textChunks := policy.ForwardTextChunks(cfg, r)
+	buildNodes := func(chunks []string, items []deliverMediaItem) []model.ForwardNode {
+		var nodes []model.ForwardNode
+		for _, chunk := range chunks {
+			nodes = append(nodes, model.ForwardNode{
+				UserID:   target.BotID,
+				Nickname: nickname,
+				Content:  []model.Segment{{Type: "text", Data: map[string]any{"text": chunk}}},
+			})
+		}
+		for _, item := range items {
+			nodes = append(nodes, model.ForwardNode{
+				UserID:   target.BotID,
+				Nickname: nickname,
+				Content:  []model.Segment{s.buildMediaSegment(e, item, target)},
+			})
+		}
+		return nodes
+	}
+	sendForwardBatched := func(nodes []model.ForwardNode) (int, error) {
+		const maxBatch = 200
+		acked := 0
+		for start := 0; start < len(nodes); start += maxBatch {
+			if start > 0 {
+				if err := check(); err != nil {
+					return acked, err
+				}
+			}
+			end := min(start+maxBatch, len(nodes))
+			if err := s.sender.SendForward(ctx, target, nodes[start:end]); err != nil {
+				return acked, err
+			}
+			acked = end
+		}
+		return acked, nil
+	}
+
+	// Message 2: Single media direct (preserving sequence with uploads) + optional full-text forward reader,
+	// OR Multi-media merged forward.
 	if len(mediaItems) <= 1 || !cfg.Media.ForwardEnabled {
 		mIdx, uIdx := 0, 0
 		for mIdx < len(mediaItems) || uIdx < len(uploads) {
@@ -1170,6 +1209,14 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 					return err
 				}
 				uIdx++
+			}
+		}
+		if cfg.Media.ForwardEnabled && len(textChunks) > 0 {
+			if err := check(); err != nil {
+				return err
+			}
+			if _, err := sendForwardBatched(buildNodes(textChunks, nil)); err != nil {
+				return fmt.Errorf("发送长文合并转发失败: %w", err)
 			}
 		}
 		return nil
@@ -1205,52 +1252,33 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 					uIdx++
 				}
 			}
+			if len(textChunks) > 0 {
+				if err := check(); err != nil {
+					return err
+				}
+				if _, err := sendForwardBatched(buildNodes(textChunks, nil)); err != nil {
+					return fmt.Errorf("发送长文合并转发失败: %w", err)
+				}
+			}
 			return nil
 		}
 	}
 
-	nickname := forwardNickname(r)
-	buildNodes := func(items []deliverMediaItem, includeFullText bool) []model.ForwardNode {
-		var nodes []model.ForwardNode
-		if includeFullText {
-			if fullText, truncated := policy.FullTextForForward(cfg, r); truncated && fullText != "" {
-				nodes = append(nodes, model.ForwardNode{
-					UserID:   target.BotID,
-					Nickname: nickname,
-					Content:  []model.Segment{{Type: "text", Data: map[string]any{"text": fullText}}},
-				})
-			}
-		}
-		for _, item := range items {
-			nodes = append(nodes, model.ForwardNode{
-				UserID:   target.BotID,
-				Nickname: nickname,
-				Content:  []model.Segment{s.buildMediaSegment(e, item, target)},
-			})
-		}
-		return nodes
-	}
-	sendForwardBatched := func(nodes []model.ForwardNode) error {
-		const maxBatch = 200
-		for start := 0; start < len(nodes); start += maxBatch {
-			if start > 0 {
-				if err := check(); err != nil {
-					return err
-				}
-			}
-			end := min(start+maxBatch, len(nodes))
-			if err := s.sender.SendForward(ctx, target, nodes[start:end]); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	forwardErr := sendForwardBatched(buildNodes(mediaItems, true))
+	ackedNodes, forwardErr := sendForwardBatched(buildNodes(textChunks, mediaItems))
 	if forwardErr != nil {
 		var apiErr *onebot.APIError
-		var imagesOnly, videosOnly []deliverMediaItem
+		totalImages := 0
 		for _, item := range mediaItems {
+			if item.kind != "video" {
+				totalImages++
+			}
+		}
+		sentText := min(ackedNodes, len(textChunks))
+		remText := textChunks[sentText:]
+		sentMedia := min(max(0, ackedNodes-len(textChunks)), len(mediaItems))
+		remMedia := mediaItems[sentMedia:]
+		var imagesOnly, videosOnly []deliverMediaItem
+		for _, item := range remMedia {
 			if item.kind == "video" {
 				videosOnly = append(videosOnly, item)
 			} else {
@@ -1258,25 +1286,25 @@ func (s *Service) deliver(ctx context.Context, target model.Target, e *model.Cac
 			}
 		}
 		// Item 2 compatibility fallback: only when OneBot explicitly rejected a mixed image+video
-		// forward (never on uncertain socket timeout), split into images forward + standalone videos.
-		if errors.As(forwardErr, &apiErr) && len(imagesOnly) > 0 && len(videosOnly) > 0 {
+		// forward (never on uncertain socket timeout), recover ONLY unacknowledged nodes.
+		if errors.As(forwardErr, &apiErr) && totalImages > 0 && len(videosOnly) > 0 {
 			if len(imagesOnly) >= 2 {
 				if err := check(); err != nil {
 					return err
 				}
-				if err := sendForwardBatched(buildNodes(imagesOnly, true)); err != nil {
+				if _, err := sendForwardBatched(buildNodes(remText, imagesOnly)); err != nil {
 					return fmt.Errorf("发送图片合并转发失败: %w", err)
 				}
 			} else {
-				if fullTextNodes := buildNodes(nil, true); len(fullTextNodes) > 0 {
+				if len(remText) > 0 {
 					if err := check(); err != nil {
 						return err
 					}
-					if err := sendForwardBatched(fullTextNodes); err != nil {
+					if _, err := sendForwardBatched(buildNodes(remText, nil)); err != nil {
 						return fmt.Errorf("发送原文合并转发失败: %w", err)
 					}
 				}
-				if len(imagesOnly) == 1 && filepath.Clean(imagesOnly[0].path) != filepath.Clean(coverPath) {
+				if len(imagesOnly) == 1 && (ackedNodes > 0 || filepath.Clean(imagesOnly[0].path) != filepath.Clean(coverPath)) {
 					if err := sendDirect(imagesOnly[0]); err != nil {
 						return err
 					}

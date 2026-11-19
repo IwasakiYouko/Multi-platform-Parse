@@ -58,8 +58,11 @@ func (values *socialOrderedValues) UnmarshalJSON(source []byte) error {
 }
 
 type socialWeiboStatus struct {
+	MBlogID string `json:"mblogid"`
+	IDStr   string `json:"idstr"`
 	TextRaw string `json:"text_raw"`
 	User    struct {
+		IDStr      string `json:"idstr"`
 		ScreenName string `json:"screen_name"`
 	} `json:"user"`
 	PicInfos     socialOrderedValues `json:"pic_infos"`
@@ -126,6 +129,7 @@ func mainlandWeibo(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 	}
 	r := mainlandResult("weibo", raw)
 	if tv {
+		r.CanonicalURL = "https://weibo.com/tv/show/" + id
 		var data struct {
 			Data struct {
 				Play struct {
@@ -173,6 +177,11 @@ func mainlandWeibo(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 	// fetch another mobile API, or append the retweet's text to the outer post.
 	r.Content = socialWeiboText(strings.ReplaceAll(status.TextRaw, Text(status.PageInfo["short_url"]), ""))
 	r.Author = status.User.ScreenName
+	if status.User.IDStr != "" && status.MBlogID != "" {
+		r.CanonicalURL = "https://weibo.com/" + status.User.IDStr + "/" + status.MBlogID
+	} else if status.IDStr != "" {
+		r.CanonicalURL = "https://m.weibo.cn/detail/" + status.IDStr
+	}
 	for _, m := range socialWeiboHashtag.FindAllString(status.TextRaw, -1) {
 		if tag := strings.Trim(strings.TrimSpace(m), "#"); tag != "" {
 			r.Tags = append(r.Tags, tag)
@@ -221,8 +230,13 @@ func mainlandWeibo(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 				if len(r.Media) == before {
 					return nil, fmt.Errorf("微博混合媒体缺少视频地址")
 				}
-			case "livephoto", "gif", "article":
-				// Reference MixMediaInfo only decodes pic and video entries.
+			case "livephoto", "gif":
+				if len(item.Data) > 0 && (Text(item.Data["video"]) != "" || Text(Path(item.Data, "thumbnail", "url")) != "" || Text(Path(item.Data, "largest", "url")) != "") {
+					if err := socialWeiboPicture(r, item.Data, item.Type); err != nil {
+						return nil, err
+					}
+				}
+			case "article":
 			default:
 				return nil, fmt.Errorf("微博未知混合媒体类型 %q", item.Type)
 			}
@@ -309,7 +323,15 @@ func mainlandTieba(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 		return nil, fmt.Errorf("贴吧响应缺少首帖内容")
 	}
 	r := mainlandResult("tieba", raw)
+	r.CanonicalURL = "https://tieba.baidu.com/p/" + match[1]
 	r.Title = Text(origin["title"])
+	r.Author = mainlandFirst(Path(origin, "author", "name_show"), Path(origin, "author", "name"), Path(thread, "author", "name_show"), Path(thread, "author", "name"))
+	if forumName := strings.TrimSpace(Text(Path(data, "forum", "name"))); forumName != "" {
+		if !strings.HasSuffix(forumName, "吧") {
+			forumName += "吧"
+		}
+		r.Tags = append(r.Tags, forumName)
+	}
 	var content []string
 	for _, part := range Array(origin["content"]) {
 		if Number(Path(part, "type")) == 0 {
@@ -388,19 +410,39 @@ func mainlandPipix(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 		return nil, fmt.Errorf("皮皮虾解析失败: 缺少正文")
 	}
 	r := mainlandResult("pipix", final)
+	if itemID := strings.TrimSpace(Text(item["item_id_str"])); itemID != "" {
+		r.CanonicalURL = "https://h5.pipix.com/item/" + itemID
+	}
 	r.Title = content
+	r.Author = mainlandFirst(Path(item, "author", "name"), Path(item, "user", "name"))
 	if itemType == 2 {
-		video := Obj(Path(item, "video", "video_download"))
-		urls, covers := Array(video["url_list"]), Array(Path(video, "cover_image", "download_list"))
+		fallbackVideo := Obj(Path(item, "video", "video_download"))
+		video := Obj(Path(item, "video", "origin_video_download"))
+		if len(Array(video["url_list"])) == 0 {
+			video = Obj(Path(item, "video", "video_high"))
+		}
+		if len(Array(video["url_list"])) == 0 {
+			video = fallbackVideo
+		}
+		urls := Array(video["url_list"])
+		covers := Array(Path(video, "cover_image", "download_list"))
+		if len(covers) == 0 {
+			covers = Array(Path(fallbackVideo, "cover_image", "download_list"))
+		}
 		if len(urls) == 0 || len(covers) == 0 {
 			return nil, fmt.Errorf("皮皮虾解析失败: 缺少视频或封面")
 		}
+		meta := make(map[string]json.Number, 3)
 		for _, key := range []string{"duration", "height", "width"} {
-			if _, ok := video[key].(json.Number); !ok {
+			if v, ok := video[key].(json.Number); ok {
+				meta[key] = v
+			} else if fb, fbOk := fallbackVideo[key].(json.Number); fbOk {
+				meta[key] = fb
+			} else {
 				return nil, fmt.Errorf("皮皮虾解析失败: 缺少视频参数 %s", key)
 			}
 		}
-		mainlandAdd(r, "video", Text(Path(urls[0], "url")), map[string]any{"width": video["width"], "height": video["height"], "duration": math.Ceil(Number(video["duration"])), "thumbnail": Path(covers[0], "url")})
+		mainlandAdd(r, "video", Text(Path(urls[0], "url")), map[string]any{"width": meta["width"], "height": meta["height"], "duration": math.Ceil(Number(meta["duration"])), "thumbnail": Path(covers[0], "url")})
 		return mainlandFinish(r, true)
 	}
 	for _, image := range Array(Path(item, "cover", "download_list")) {
@@ -444,6 +486,9 @@ func mainlandZuiyou(ctx context.Context, c *http.Client, raw, cookie string) (*m
 				Member  struct {
 					Name string `json:"name"`
 				} `json:"member"`
+				Topic struct {
+					Topic string `json:"topic"`
+				} `json:"topic"`
 				Imgs []struct {
 					ID    json.Number         `json:"id"`
 					Video any                 `json:"video"`
@@ -463,7 +508,11 @@ func mainlandZuiyou(ctx context.Context, c *http.Client, raw, cookie string) (*m
 		return nil, fmt.Errorf("最右帖子数据不可用")
 	}
 	r := mainlandResult("zuiyou", raw)
+	r.CanonicalURL = "https://share.xiaochuankeji.cn/hybrid/share/post?pid=" + pid
 	r.Content, r.Author = post.Content, post.Member.Name
+	if topicName := strings.TrimSpace(post.Topic.Topic); topicName != "" {
+		r.Tags = append(r.Tags, topicName)
+	}
 	for _, image := range post.Imgs {
 		if image.ID == "" {
 			return nil, fmt.Errorf("最右媒体缺少 ID")

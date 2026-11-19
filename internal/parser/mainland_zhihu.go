@@ -25,7 +25,19 @@ func mainlandZhihu(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 	if strings.TrimSpace(cookie) == "" {
 		return nil, fmt.Errorf("知乎需要配置已登录的 Cookie")
 	}
-	return mainlandZhihuParse(ctx, c, raw, cookie, make(map[string]bool))
+	source := raw
+	if u, err := url.Parse(raw); err == nil && (u.Hostname() == "zhihu.link" || strings.HasSuffix(u.Hostname(), ".zhihu.link")) {
+		_, final, rErr := Get(netx.WithoutCookies(ctx), c, raw, Headers("", "https://www.zhihu.com/"))
+		if rErr != nil {
+			return nil, rErr
+		}
+		raw = final
+	}
+	res, err := mainlandZhihuParse(ctx, c, raw, cookie, make(map[string]bool))
+	if err == nil && res != nil && source != raw && res.CanonicalURL == "" {
+		res.CanonicalURL = raw
+	}
+	return res, err
 }
 
 func mainlandZhihuParse(ctx context.Context, c *http.Client, raw, cookie string, seen map[string]bool) (*model.ParseResult, error) {
@@ -37,6 +49,8 @@ func mainlandZhihuParse(ctx context.Context, c *http.Client, raw, cookie string,
 		return nil, fmt.Errorf("知乎链接格式无效")
 	}
 	switch u.Hostname() {
+	case "zhihu.com", "m.zhihu.com":
+		u.Host = "www.zhihu.com"
 	case "www.zhihu.com", "zhuanlan.zhihu.com", "daily.zhihu.com":
 	default:
 		return nil, fmt.Errorf("知乎原文链接必须使用官方域名")
@@ -78,6 +92,7 @@ func mainlandZhihuParse(ctx context.Context, c *http.Client, raw, cookie string,
 		result, err := mainlandZhihuParse(ctx, c, origin, cookie, seen)
 		if err == nil {
 			result.SourceURL = raw
+			result.CanonicalURL = "https://daily.zhihu.com/story/" + m[1]
 		}
 		return result, err
 	}
@@ -87,9 +102,15 @@ func mainlandZhihuParse(ctx context.Context, c *http.Client, raw, cookie string,
 	}
 	endpoint := ""
 	pin, video := false, false
-	if m := regexp.MustCompile(`^/(?:question/\d+/)?answer/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
-		endpoint = "https://www.zhihu.com/api/v4/answers/" + m[1] + "?include=data%5B%2A%5D.content"
+	if m := regexp.MustCompile(`^/(?:question/(\d+)/)?answer/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
+		endpoint = "https://www.zhihu.com/api/v4/answers/" + m[2] + "?include=data%5B%2A%5D.content"
+		if m[1] != "" {
+			r.CanonicalURL = "https://www.zhihu.com/question/" + m[1] + "/answer/" + m[2]
+		} else {
+			r.CanonicalURL = "https://www.zhihu.com/answer/" + m[2]
+		}
 	} else if m := regexp.MustCompile(`^/question/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
+		r.CanonicalURL = "https://www.zhihu.com/question/" + m[1]
 		var listing any
 		if e = mainlandZhihuJSON(ctx, c, "https://www.zhihu.com/api/v4/questions/"+m[1]+"/answers?offset=&limit=1&sort_by=default&include=data%5B%2A%5D.content", cookie, dc, &listing); e != nil {
 			return nil, e
@@ -112,14 +133,18 @@ func mainlandZhihuParse(ctx context.Context, c *http.Client, raw, cookie string,
 			return nil, fmt.Errorf("知乎回答 ID 格式无效")
 		}
 		endpoint = "https://www.zhihu.com/api/v4/answers/" + id + "?include=data%5B%2A%5D.content"
+		r.CanonicalURL = "https://www.zhihu.com/question/" + m[1] + "/answer/" + id
 	} else if m := regexp.MustCompile(`^/(?:appview/)?p/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
 		endpoint = "https://zhuanlan.zhihu.com/api/articles/" + m[1]
+		r.CanonicalURL = "https://zhuanlan.zhihu.com/p/" + m[1]
 	} else if m := regexp.MustCompile(`^/pin/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
 		endpoint = "https://www.zhihu.com/api/v4/pins/" + m[1]
+		r.CanonicalURL = "https://www.zhihu.com/pin/" + m[1]
 		pin = true
 	} else if m := regexp.MustCompile(`^/zvideo/(\d+)(?:/|$)`).FindStringSubmatch(u.Path); len(m) > 0 {
 		// Retained extension: standalone zvideo links are outside the reference adapter.
 		endpoint = "https://www.zhihu.com/api/v4/zvideos/" + m[1]
+		r.CanonicalURL = "https://www.zhihu.com/zvideo/" + m[1]
 		video = true
 	} else {
 		return nil, fmt.Errorf("知乎支持回答、问题、专栏、想法、视频和日报链接")
@@ -133,6 +158,11 @@ func mainlandZhihuParse(ctx context.Context, c *http.Client, raw, cookie string,
 		r.Title = Text(Path(v, "question", "title"))
 	}
 	r.Author = Text(Path(v, "author", "name"))
+	for _, topic := range Array(Path(v, "topics")) {
+		if name := strings.TrimSpace(Text(Path(topic, "name"))); name != "" {
+			r.Tags = append(r.Tags, name)
+		}
+	}
 	if video {
 		r.Type = "video"
 		r.Content = mainlandText(mainlandFirst(Path(v, "description"), Path(v, "title")))

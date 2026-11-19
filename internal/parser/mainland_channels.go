@@ -103,6 +103,7 @@ func mainlandChannels(ctx context.Context, c *http.Client, raw, cookie string) (
 		return nil, fmt.Errorf("微信视频号官方预览返回加密媒体，而非可直接播放版本")
 	}
 	r := mainlandResult("weixin_channels", raw)
+	r.CanonicalURL = "https://weixin.qq.com/sph/" + id
 	r.Title = mainlandFirst(info["description"], data["desc"])
 	r.Author = mainlandFirst(Path(feed, "data", "authorInfo", "nickname"), data["author"])
 	mainlandAdd(r, "video", video, map[string]any{"thumbnail": mainlandFirst(info["coverUrl"], data["cover_url"]), "duration": info["duration"], "width": info["width"], "height": info["height"]})

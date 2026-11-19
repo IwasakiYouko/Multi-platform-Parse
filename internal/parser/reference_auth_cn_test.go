@@ -465,3 +465,39 @@ func TestReferenceAuthCNTitleOnlyPosts(t *testing.T) {
 		t.Fatalf("title-only article: %+v, %v", article, err)
 	}
 }
+
+func TestReferenceXHHShareURLCanonicalAndTopics(t *testing.T) {
+	xhhClient, _ := authCNXHHClient(t, `{"status":"ok","result":{"link":{"title":"疯狂星期四","text":"[{\"type\":\"text\",\"text\":\"领券攻略\"}]","has_video":false,"topics":[{"name":"美食"},{"name":"羊毛"}]}}}`)
+	res, err := mainlandXiaoheihe(context.Background(), xhhClient, "https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?link_id=123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.CanonicalURL != "https://www.xiaoheihe.cn/app/bbs/link/123" {
+		t.Fatalf("Xiaoheihe CanonicalURL = %q, want https://www.xiaoheihe.cn/app/bbs/link/123", res.CanonicalURL)
+	}
+	if len(res.Tags) != 2 || res.Tags[0] != "美食" || res.Tags[1] != "羊毛" {
+		t.Fatalf("Xiaoheihe Tags = %#v, want [美食 羊毛]", res.Tags)
+	}
+}
+
+func TestReferenceZhihuShortLinkRedirectAndCanonical(t *testing.T) {
+	client := &http.Client{Transport: authCNTransport(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "zhihu.link" {
+			target, _ := url.Parse("https://www.zhihu.com/appview/p/680011223?utm_psn=123")
+			reqCopy := req.Clone(req.Context())
+			reqCopy.URL = target
+			return authCNResponse(reqCopy, "<html></html>"), nil
+		}
+		return authCNResponse(req, `{"title":"Zhuanlan Title","content":"<p>Body</p>","author":{"name":"Writer"},"topics":[{"name":"Go语言"}]}`), nil
+	})}
+	res, err := mainlandZhihu(context.Background(), client, "https://zhihu.link/AbCdEf", "d_c0=x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.CanonicalURL != "https://zhuanlan.zhihu.com/p/680011223" {
+		t.Fatalf("Zhihu CanonicalURL = %q, want https://zhuanlan.zhihu.com/p/680011223", res.CanonicalURL)
+	}
+	if len(res.Tags) != 1 || res.Tags[0] != "Go语言" {
+		t.Fatalf("Zhihu Tags = %#v, want [Go语言]", res.Tags)
+	}
+}

@@ -25,6 +25,12 @@ query P($id: ID!) {
   post(id: $id) {
     title
     isLocked
+    creator {
+      name
+    }
+    tags {
+      displayTitle
+    }
     content {
       bodyModel {
         paragraphs {
@@ -177,7 +183,18 @@ func mediumWithHTTP(ctx context.Context, raw string, do func(*http.Request) (*ht
 	if post == nil {
 		return nil, ContentUnavailableError{Reason: "medium: article does not exist or was deleted"}
 	}
-	r := &model.ParseResult{Platform: "medium", SourceURL: source, Title: Text(Path(post, "title")), Type: "article"}
+	r := &model.ParseResult{
+		Platform:  "medium",
+		SourceURL: source,
+		Title:     Text(Path(post, "title")),
+		Author:    strings.TrimSpace(Text(Path(post, "creator", "name"))),
+		Type:      "article",
+	}
+	for _, tag := range Array(Path(post, "tags")) {
+		if t := strings.TrimSpace(Text(Path(tag, "displayTitle"))); t != "" {
+			r.Tags = append(r.Tags, t)
+		}
+	}
 	mediumRender(r, Array(Path(post, "content", "bodyModel", "paragraphs")))
 	if strings.TrimSpace(r.Content) == "" && len(r.Media) == 0 {
 		return nil, fmt.Errorf("medium: no article body exposed (locked or unavailable)")

@@ -79,11 +79,15 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 	defer client.CloseIdleConnections()
 	protected := p.ID == "bilibili" || p.ID == "douyin"
 	attempts := 1
-	if !protected { attempts = 3 }
+	if !protected {
+		attempts = 3
+	}
 	var r *model.ParseResult
 	for range attempts {
 		r, err = fn(ctx, client, rawURL, policy.Cookie)
-		if err == nil || ctx.Err() != nil || referenceUnavailable(err) { break }
+		if err == nil || ctx.Err() != nil || referenceUnavailable(err) {
+			break
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -134,7 +138,9 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 			}
 		}
 		k := m.Kind + ":" + m.URL
-		if m.Kind == "livephoto" { k += ":" + m.VideoURL }
+		if m.Kind == "livephoto" {
+			k += ":" + m.VideoURL
+		}
 		if seen[k] {
 			continue
 		}
@@ -153,7 +159,9 @@ func Resolve(ctx context.Context, cfg model.Config, rawURL string) (*model.Parse
 		}
 	}
 	readable := strings.TrimSpace(r.Content) != ""
-	if !protected { readable = readable || strings.TrimSpace(r.Title) != "" || strings.TrimSpace(r.MarkdownContent) != "" }
+	if !protected {
+		readable = readable || strings.TrimSpace(r.Title) != "" || strings.TrimSpace(r.MarkdownContent) != ""
+	}
 	if !readable && len(r.Media) == 0 {
 		return nil, errors.New("未找到公开正文或媒体，可能需要Cookie或已被删除")
 	}

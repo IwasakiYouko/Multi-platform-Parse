@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const CurrentConfigSchema = 2
+const CurrentConfigSchema = 3
 
 type Config struct {
 	SchemaVersion int                       `json:"schema_version,omitempty"`
@@ -60,6 +60,7 @@ type MediaConfig struct {
 	ShowCover            bool   `json:"show_cover"`
 	ShowInfo             bool   `json:"show_info"`
 	CleanURL             bool   `json:"clean_url"`
+	XHSKeepToken         bool   `json:"xhs_keep_token"`
 	ForwardEnabled       bool   `json:"forward_enabled"`
 	SummaryLength        int    `json:"summary_length"`
 	MaxTags              int    `json:"max_tags"`
@@ -96,6 +97,7 @@ type PlatformPolicy struct {
 
 const DefaultMessageTemplate = "{title}\n{tags}\n{content}\n{url}"
 const LegacyMessageTemplateV20 = "{title}\n{author}\n{content}\n{url}"
+
 type Platform struct {
 	ID       string   `json:"id"`
 	Name     string   `json:"name"`
@@ -212,7 +214,7 @@ func DefaultConfig() Config {
 		OneBot:        OneBotConfig{Token: NewID() + NewID(), SelfIDs: []string{}},
 		Security:      SecurityConfig{Failures: 5, WindowMinutes: 15, BanMinutes: 60, SessionHours: 12},
 		Proxy:         ProxyConfig{Mode: "direct"},
-		Media:         MediaConfig{MaxBytes: 80 * 1024 * 1024, MaxDurationSeconds: 1500, MaxImages: 30, Quality: 720, Concurrency: 2, TranscodeConcurrency: 1, MaxDiskBytes: 2 * 1024 * 1024 * 1024, AutoDownload: true, ShowCover: true, ShowInfo: true, CleanURL: true, ForwardEnabled: true, SummaryLength: 300, MaxTags: 8, MessageTemplate: DefaultMessageTemplate, OversizeMode: "link", Transport: "file"},
+		Media:         MediaConfig{MaxBytes: 80 * 1024 * 1024, MaxDurationSeconds: 1500, MaxImages: 30, Quality: 1080, Concurrency: 2, TranscodeConcurrency: 1, MaxDiskBytes: 2 * 1024 * 1024 * 1024, AutoDownload: true, ShowCover: true, ShowInfo: true, CleanURL: true, XHSKeepToken: false, ForwardEnabled: true, SummaryLength: 300, MaxTags: 8, MessageTemplate: DefaultMessageTemplate, OversizeMode: "link", Transport: "file"},
 		Cache:         CacheConfig{TTLHours: 24},
 		Policy:        PolicyConfig{Enabled: true, PrivateEnabled: true, GroupReply: true, EmojiReaction: true, GroupSilentError: false, MaxLinksPerMsg: 3, CooldownSeconds: 30, RejectText: "{platform} 暂不支持解析：{reason}", GroupWhitelist: []int64{}, GroupBlacklist: []int64{}},
 		Platforms:     p,
@@ -239,7 +241,7 @@ func NormalizeConfig(c *Config) {
 	if c.Policy.GroupBlacklist == nil {
 		c.Policy.GroupBlacklist = []int64{}
 	}
-	if c.SchemaVersion < CurrentConfigSchema {
+	if c.SchemaVersion < 2 {
 		if c.Media.SummaryLength == 0 {
 			c.Media.SummaryLength = 300
 		}
@@ -249,7 +251,12 @@ func NormalizeConfig(c *Config) {
 		if strings.TrimSpace(c.Media.MessageTemplate) == "" || strings.TrimSpace(c.Media.MessageTemplate) == LegacyMessageTemplateV20 {
 			c.Media.MessageTemplate = DefaultMessageTemplate
 		}
+	}
+	if c.SchemaVersion < CurrentConfigSchema {
 		c.SchemaVersion = CurrentConfigSchema
+	}
+	if c.Media.Quality <= 0 {
+		c.Media.Quality = 1080
 	}
 	if c.Policy.MaxLinksPerMsg <= 0 {
 		c.Policy.MaxLinksPerMsg = 3
@@ -370,6 +377,7 @@ type Media struct {
 	Kind            string            `json:"kind"`
 	URL             string            `json:"url"`
 	AudioURL        string            `json:"audio_url,omitempty"`
+	AudioBackupURLs []string          `json:"audio_backup_urls,omitempty"`
 	VideoURL        string            `json:"video_url,omitempty"`
 	VideoBackupURLs []string          `json:"video_backup_urls,omitempty"`
 	ThumbnailURL    string            `json:"thumbnail_url,omitempty"`

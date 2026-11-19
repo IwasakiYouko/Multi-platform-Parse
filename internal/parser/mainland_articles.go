@@ -213,6 +213,7 @@ func mainlandDouban(ctx context.Context, c *http.Client, raw, cookie string) (*m
 	h["User-Agent"] = mainlandMobileUA
 	match := regexp.MustCompile(`^/(?:group/)?topic/(\d+)(?:/|$)`).FindStringSubmatch(u.Path)
 	if len(match) > 0 {
+		r.CanonicalURL = "https://www.douban.com/group/topic/" + match[1] + "/"
 		var v any
 		endpoint := "https://m.douban.com/rexxar/api/v2/group/topic/" + match[1]
 		if err := articleDoubanJSON(ctx, c, endpoint, h, &v); err != nil {
@@ -372,9 +373,11 @@ func mainlandToutiao(ctx context.Context, c *http.Client, raw, cookie string) (*
 		return nil, ContentUnavailableError{Reason: "今日头条内容不存在或已删除"}
 	}
 	r := mainlandResult("toutiao", articleCanonical(raw))
+	r.CanonicalURL = "https://www.toutiao.com/article/" + match[1] + "/"
 	r.Title = Text(data["title"])
 	r.Author = mainlandFirst(data["source"], data["media_name"])
 	if _, exists := data["thread"]; exists {
+		r.CanonicalURL = "https://www.toutiao.com/w/" + match[1] + "/"
 		thread := Path(data, "thread", "thread_base")
 		r.Title = ""
 		r.Content = strings.TrimSpace(Text(Path(thread, "content")))

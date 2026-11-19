@@ -16,7 +16,7 @@
         <div class="brand-mark">MP</div>
         <div>
           <h1>MultiParse 控制台</h1>
-          <p class="muted">多平台内容解析与 OneBot 投递中枢 · v2.0</p>
+          <p id="auth-subtitle" class="muted">多平台内容解析与 OneBot 投递中枢 · v2.2.0</p>
         </div>
         <button type="button" id="auth-theme-btn" class="icon-btn auth-theme-btn" title="切换明暗主题" aria-label="切换明暗主题"></button>
       </div>
@@ -58,11 +58,17 @@
         </label>
         <label class="field">
           <span class="field-label">当前初始密码</span>
-          <input id="force-current-pwd" type="password" required maxlength="1024" autocomplete="current-password" placeholder="输入刚登录使用的初始密码">
+          <div class="input-group">
+            <input id="force-current-pwd" type="password" required maxlength="1024" autocomplete="current-password" placeholder="输入刚登录使用的初始密码">
+            <button type="button" class="btn btn-ghost btn-sm" data-action="toggle-pwd" data-target="force-current-pwd">显示</button>
+          </div>
         </label>
         <label class="field">
           <span class="field-label">新管理员密码（至少 12 位）</span>
-          <input id="force-new-pwd" type="password" required minlength="12" maxlength="1024" autocomplete="new-password" placeholder="建议包含大小写字母、数字与符号">
+          <div class="input-group">
+            <input id="force-new-pwd" type="password" required minlength="12" maxlength="1024" autocomplete="new-password" placeholder="建议包含大小写字母、数字与符号">
+            <button type="button" class="btn btn-ghost btn-sm" data-action="toggle-pwd" data-target="force-new-pwd">显示</button>
+          </div>
         </label>
         <button type="submit" id="force-pwd-submit" class="btn btn-primary btn-block">更新凭据并重新登录</button>
       </form>
@@ -78,7 +84,7 @@
         <div class="brand-mark">MP</div>
         <div class="brand-meta">
           <strong>MultiParse</strong>
-          <span id="sidebar-version" class="badge badge-neutral">v2.0.0</span>
+          <span id="sidebar-version" class="badge badge-neutral">v2.2.0</span>
         </div>
       </div>
 
@@ -192,7 +198,10 @@
       <h3 id="reauth-title">安全验证</h3>
       <p id="reauth-desc" class="muted">本次修改涉及监听、安全策略、代理或凭据等敏感配置，请输入当前管理员密码确认。</p>
       <form id="reauth-form" class="stack-md">
-        <input id="reauth-password" type="password" required maxlength="1024" autocomplete="current-password" placeholder="请输入当前管理员密码">
+        <div class="input-group">
+          <input id="reauth-password" type="password" required maxlength="1024" autocomplete="current-password" placeholder="请输入当前管理员密码">
+          <button type="button" class="btn btn-ghost btn-sm" data-action="toggle-pwd" data-target="reauth-password">显示</button>
+        </div>
         <div class="modal-actions">
           <button type="button" id="reauth-cancel" class="btn btn-ghost">取消</button>
           <button type="submit" id="reauth-confirm" class="btn btn-primary">确认执行</button>

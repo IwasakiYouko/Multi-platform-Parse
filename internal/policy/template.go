@@ -11,62 +11,105 @@ import (
 )
 
 var globalTrackingParams = map[string]bool{
-	"utm_source":       true,
-	"utm_medium":       true,
-	"utm_campaign":     true,
-	"utm_term":         true,
-	"utm_content":      true,
-	"utm_id":           true,
-	"fbclid":           true,
-	"gclid":            true,
-	"msclkid":          true,
-	"igshid":           true,
-	"igsh":             true,
-	"vd_source":        true,
-	"spm_id_from":      true,
-	"from_spmid":       true,
-	"from_source":      true,
-	"seid":             true,
-	"share_source":     true,
-	"share_medium":     true,
-	"share_plat":       true,
-	"share_session_id": true,
-	"share_from":       true,
-	"share_tag":        true,
-	"share_copy_link":  true,
-	"unique_k":         true,
-	"bbid":             true,
-	"buvid":            true,
-	"is_story_h5":      true,
-	"up_id":            true,
-	"plat_id":          true,
-	"tt_from":          true,
-	"u_code":           true,
-	"iid":              true,
-	"did":              true,
-	"enter_from":       true,
-	"enter_method":     true,
-	"is_from_webapp":   true,
-	"sender_device":    true,
-	"web_id":           true,
-	"_r":               true,
-	"_t":               true,
-	"share_app_id":     true,
-	"share_link_id":    true,
-	"share_item_id":    true,
-	"ug_btm":           true,
-	"ugbiz_name":       true,
-	"xhsshare":         true,
-	"apptime":          true,
-	"appuid":           true,
-	"shareredid":       true,
+	"utm_source":             true,
+	"utm_medium":             true,
+	"utm_campaign":           true,
+	"utm_term":               true,
+	"utm_content":            true,
+	"utm_id":                 true,
+	"utm_psn":                true,
+	"fbclid":                 true,
+	"gclid":                  true,
+	"msclkid":                true,
+	"ttclid":                 true,
+	"twclid":                 true,
+	"yclid":                  true,
+	"wickedid":               true,
+	"li_fat_id":              true,
+	"mc_cid":                 true,
+	"mc_eid":                 true,
+	"mkt_tok":                true,
+	"_hsenc":                 true,
+	"_hsmi":                  true,
+	"s_kwcid":                true,
+	"igshid":                 true,
+	"igsh":                   true,
+	"xmt":                    true,
+	"vd_source":              true,
+	"spm":                    true,
+	"scm":                    true,
+	"spm_id_from":            true,
+	"from_spmid":             true,
+	"from_source":            true,
+	"from":                   true,
+	"isappinstalled":         true,
+	"nsukey":                 true,
+	"seid":                   true,
+	"share_source":           true,
+	"share_medium":           true,
+	"share_plat":             true,
+	"share_session_id":       true,
+	"share_from":             true,
+	"share_tag":              true,
+	"share_copy_link":        true,
+	"share_token":            true,
+	"sharer_shareinfo":       true,
+	"sharer_shareinfo_first": true,
+	"mpshare":                true,
+	"chksm":                  true,
+	"unique_k":               true,
+	"bbid":                   true,
+	"buvid":                  true,
+	"start_progress":         true,
+	"is_story_h5":            true,
+	"up_id":                  true,
+	"plat_id":                true,
+	"tt_from":                true,
+	"u_code":                 true,
+	"iid":                    true,
+	"did":                    true,
+	"enter_from":             true,
+	"enter_method":           true,
+	"is_from_webapp":         true,
+	"sender_device":          true,
+	"web_id":                 true,
+	"_r":                     true,
+	"_t":                     true,
+	"share_app_id":           true,
+	"share_link_id":          true,
+	"share_item_id":          true,
+	"ug_btm":                 true,
+	"ugbiz_name":             true,
+	"xhsshare":               true,
+	"xsec_token":             true,
+	"xsec_source":            true,
+	"author_share":           true,
+	"apptime":                true,
+	"appuid":                 true,
+	"shareredid":             true,
+	"si":                     true,
+	"pp":                     true,
+	"feature":                true,
 }
 
 var (
-	douyinVideoPathRe = regexp.MustCompile(`^/(?:share/)?video/([0-9]+)(?:/|$)`)
-	douyinNotePathRe  = regexp.MustCompile(`^/(?:share/)?(?:note|slides)/([0-9]+)(?:/|$)`)
-	ksPhotoPathRe     = regexp.MustCompile(`^/(?:short-video|fw/photo)/([^/?#]+)(?:/|$)`)
-	digitsOnlyRe      = regexp.MustCompile(`^[0-9]+$`)
+	biliDynamicPathRe   = regexp.MustCompile(`^/(?:opus/|dynamic/)?([0-9]{15,22})(?:/|$)`)
+	biliReadMobileRe    = regexp.MustCompile(`^/read/mobile/([0-9]+)(?:/|$)`)
+	douyinVideoPathRe   = regexp.MustCompile(`^/(?:share/)?video/([0-9]+)(?:/|$)`)
+	douyinNotePathRe    = regexp.MustCompile(`^/(?:share/)?(?:note|slides)/([0-9]+)(?:/|$)`)
+	xhsProfileNoteRe    = regexp.MustCompile(`^/user/profile/[^/?#]+/([0-9a-fA-F]{16,32})(?:/|$)`)
+	ksPhotoPathRe       = regexp.MustCompile(`^/(?:short-video|fw/photo)/([^/?#]+)(?:/|$)`)
+	tiebaPostPathRe     = regexp.MustCompile(`^/p/([0-9]+)(?:/|$)`)
+	weixinSphPathRe     = regexp.MustCompile(`^/sph/([A-Za-z0-9_-]+)(?:/|$)`)
+	xhhLinkPathRe       = regexp.MustCompile(`/link/([A-Za-z0-9_-]+)(?:/|$)`)
+	xhhSafeIDRe         = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	zhihuAppviewPRe     = regexp.MustCompile(`^/(?:appview/)?p/([0-9]+)(?:/|$)`)
+	toutiaoItemPathRe   = regexp.MustCompile(`^/(?:(?:group|item)/|i|a)([0-9]+)(?:/|$)`)
+	tiktokMobileVPathRe = regexp.MustCompile(`^/v/([0-9]+)(?:\.html)?(?:/|$)`)
+	zuiyouDetailPathRe  = regexp.MustCompile(`^/detail/([0-9]+)(?:/|$)`)
+	digitsOnlyRe        = regexp.MustCompile(`^[0-9]+$`)
+	inlineHTTPURLRe     = regexp.MustCompile(`https?://[^\s<>"'()（）【】「」『』《》，。；！？、：]+`)
+	multiBlankLinesRe   = regexp.MustCompile(`(?:\n[ \t]*){3,}`)
 
 	xhsTopicTagRe    = regexp.MustCompile(`#([^#\[\]\r\n]{1,40})\[话题\]#`)
 	doubleHashTagRe  = regexp.MustCompile(`#([^#\s\r\n][^#\r\n]{0,38}?)#`)
@@ -91,6 +134,16 @@ func allowQueryKeys(q url.Values, allowed ...string) string {
 		}
 		if lk == "p" || lk == "pn" {
 			if len(vals) == 1 && (vals[0] == "" || vals[0] == "1") {
+				continue
+			}
+		}
+		if lk == "see_lz" {
+			if len(vals) == 1 && (vals[0] == "" || vals[0] == "0" || strings.EqualFold(vals[0], "false")) {
+				continue
+			}
+		}
+		if lk == "t" {
+			if len(vals) == 1 && (vals[0] == "" || vals[0] == "0" || vals[0] == "0.0" || vals[0] == "0s") {
 				continue
 			}
 		}
@@ -127,12 +180,25 @@ func CleanTrackingURL(raw string) string {
 
 	switch {
 	case matchDomain(host, "b23.tv", "bili2233.cn"):
+		u.Scheme = "https"
 		u.Fragment = ""
 		u.RawQuery = allowQueryKeys(q, "p")
 		return u.String()
 
 	case matchDomain(host, "bilibili.com"):
+		u.Scheme = "https"
 		u.Fragment = ""
+		if host == "t.bilibili.com" || strings.HasPrefix(u.Path, "/opus/") || strings.HasPrefix(u.Path, "/dynamic/") {
+			if m := biliDynamicPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
+				return "https://www.bilibili.com/opus/" + m[1]
+			}
+		}
+		if m := biliReadMobileRe.FindStringSubmatch(u.Path); len(m) == 2 {
+			return "https://www.bilibili.com/read/cv" + m[1]
+		}
+		if u.Path == "/read/mobile" && digitsOnlyRe.MatchString(q.Get("id")) {
+			return "https://www.bilibili.com/read/cv" + q.Get("id")
+		}
 		if host == "m.bilibili.com" || host == "bilibili.com" {
 			u.Host = "www.bilibili.com"
 		}
@@ -140,11 +206,13 @@ func CleanTrackingURL(raw string) string {
 			u.Path = strings.TrimRight(u.Path, "/")
 			u.RawQuery = allowQueryKeys(q, "p", "t")
 		} else {
+			u.Path = strings.TrimRight(u.Path, "/")
 			u.RawQuery = ""
 		}
 		return u.String()
 
 	case matchDomain(host, "douyin.com", "iesdouyin.com"):
+		u.Scheme = "https"
 		u.Fragment = ""
 		if host == "v.douyin.com" {
 			u.RawQuery = ""
@@ -156,56 +224,79 @@ func CleanTrackingURL(raw string) string {
 		if m := douyinNotePathRe.FindStringSubmatch(u.Path); len(m) == 2 {
 			return "https://www.douyin.com/note/" + m[1]
 		}
-		if modal := q.Get("modal_id"); digitsOnlyRe.MatchString(modal) {
-			return "https://www.douyin.com/video/" + modal
+		for _, k := range []string{"modal_id", "vid", "aweme_id"} {
+			if id := q.Get(k); digitsOnlyRe.MatchString(id) {
+				return "https://www.douyin.com/video/" + id
+			}
 		}
 		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "xhslink.com", "xhslink.cn"):
+		u.Scheme = "https"
 		u.Fragment = ""
 		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "xiaohongshu.com"):
-		u.Fragment = ""
 		u.Scheme = "https"
 		u.Host = "www.xiaohongshu.com"
+		u.Fragment = ""
 		if strings.HasPrefix(u.Path, "/discovery/item/") {
 			id := strings.Trim(strings.TrimPrefix(u.Path, "/discovery/item/"), "/")
 			if id != "" && !strings.Contains(id, "/") {
 				u.Path = "/explore/" + id
 			}
+		} else if m := xhsProfileNoteRe.FindStringSubmatch(u.Path); len(m) == 2 {
+			u.Path = "/explore/" + m[1]
+		} else if strings.HasPrefix(u.Path, "/explore/") {
+			u.Path = strings.TrimRight(u.Path, "/")
 		}
-		// Keep only xsec_token / xsec_source so web browsers do not hit XHS's 404 gate,
-		// stripping appuid, apptime, xhsshare, shareRedId, author_share, etc.
-		u.RawQuery = allowQueryKeys(q, "xsec_token", "xsec_source")
+		// Strip 100% of query parameters (including xsec_source and xsec_token) for pure direct URLs.
+		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "kuaishou.com", "chenzhongtech.com", "gifshow.com"):
+		u.Scheme = "https"
 		u.Fragment = ""
 		if m := ksPhotoPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
 			return "https://www.kuaishou.com/short-video/" + strings.TrimSuffix(m[1], ".html")
 		}
-		u.RawQuery = allowQueryKeys(q, "photoId")
+		if pid := strings.TrimSpace(q.Get("photoId")); xhhSafeIDRe.MatchString(pid) {
+			return "https://www.kuaishou.com/short-video/" + pid
+		}
+		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "weibo.com", "weibo.cn"):
+		u.Scheme = "https"
 		u.Fragment = ""
 		if strings.HasPrefix(u.Path, "/show") {
+			if fid := strings.TrimSpace(q.Get("fid")); fid != "" && !strings.ContainsAny(fid, " /?#&") {
+				return "https://weibo.com/tv/show/" + fid
+			}
 			u.RawQuery = allowQueryKeys(q, "fid")
 		} else {
+			if host == "weibo.com" || host == "www.weibo.com" {
+				u.Host = "weibo.com"
+			}
+			u.Path = strings.TrimRight(u.Path, "/")
 			u.RawQuery = ""
 		}
 		return u.String()
 
 	case matchDomain(host, "tieba.baidu.com", "tiebap.baidu.com"):
-		u.Fragment = ""
+		u.Scheme = "https"
 		u.Host = "tieba.baidu.com"
+		u.Fragment = ""
+		if m := tiebaPostPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
+			u.Path = "/p/" + m[1]
+		}
 		u.RawQuery = allowQueryKeys(q, "see_lz", "pn")
 		return u.String()
 
 	case matchDomain(host, "mp.weixin.qq.com"):
+		u.Scheme = "https"
 		u.Fragment = ""
 		if strings.HasPrefix(u.Path, "/s/") && len(u.Path) > 3 {
 			u.RawQuery = ""
@@ -214,47 +305,203 @@ func CleanTrackingURL(raw string) string {
 		}
 		return u.String()
 
-	case matchDomain(host, "twitter.com", "x.com", "fixupx.com"):
-		u.Fragment = ""
+	case matchDomain(host, "weixin.qq.com", "channels.weixin.qq.com", "finder.video.qq.com"):
 		u.Scheme = "https"
-		u.Host = "x.com"
+		u.Fragment = ""
+		if m := weixinSphPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
+			return "https://weixin.qq.com/sph/" + m[1]
+		}
+		if u.Path == "/finder-preview/pages/sph" && xhhSafeIDRe.MatchString(q.Get("id")) {
+			return "https://weixin.qq.com/sph/" + q.Get("id")
+		}
 		u.RawQuery = ""
 		return u.String()
 
-	case matchDomain(host, "t.co", "instagram.com", "instagr.am", "threads.net", "threads.com", "tiktok.com", "zhihu.com", "zhihu.link", "coolapk.com", "coolapk1s.com", "pipix.com", "toutiao.com", "bgm.tv", "bangumi.tv", "chii.in", "medium.com", "dou.bz", "douc.cc"):
+	case matchDomain(host, "twitter.com", "x.com", "fixupx.com"):
+		u.Scheme = "https"
+		u.Host = "x.com"
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String()
+
+	case matchDomain(host, "instagram.com", "instagr.am"):
+		u.Scheme = "https"
+		u.Host = "www.instagram.com"
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String()
+
+	case matchDomain(host, "threads.net", "threads.com"):
+		u.Scheme = "https"
+		u.Host = "www.threads.com"
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String()
+
+	case matchDomain(host, "tiktok.com"):
+		u.Scheme = "https"
+		u.Fragment = ""
+		u.RawQuery = ""
+		if m := tiktokMobileVPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
+			return "https://www.tiktok.com/@_/video/" + m[1]
+		}
+		return u.String()
+
+	case matchDomain(host, "zhihu.com", "zhihu.link"):
+		u.Scheme = "https"
+		u.Fragment = ""
+		u.RawQuery = ""
+		if matchDomain(host, "zhihu.link") {
+			return u.String()
+		}
+		if m := zhihuAppviewPRe.FindStringSubmatch(u.Path); len(m) == 2 {
+			return "https://zhuanlan.zhihu.com/p/" + m[1]
+		}
+		if host == "m.zhihu.com" || host == "zhihu.com" {
+			u.Host = "www.zhihu.com"
+		}
+		u.Path = strings.TrimRight(u.Path, "/")
+		return u.String()
+
+	case matchDomain(host, "coolapk.com", "coolapk1s.com"):
+		u.Scheme = "https"
+		u.Host = "www.coolapk.com"
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String()
+
+	case matchDomain(host, "toutiao.com"):
+		u.Scheme = "https"
+		u.Fragment = ""
+		u.RawQuery = ""
+		if m := toutiaoItemPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
+			return "https://www.toutiao.com/article/" + m[1] + "/"
+		}
+		if host == "m.toutiao.com" || host == "toutiao.com" {
+			u.Host = "www.toutiao.com"
+		}
+		return u.String()
+
+	case matchDomain(host, "bgm.tv", "bangumi.tv", "chii.in"):
+		u.Scheme = "https"
+		u.Host = "bgm.tv"
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String()
+
+	case matchDomain(host, "t.co", "pipix.com", "medium.com", "dou.bz", "douc.cc"):
+		u.Scheme = "https"
 		u.Fragment = ""
 		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "douban.com"):
+		u.Scheme = "https"
 		u.Fragment = ""
-		u.RawQuery = allowQueryKeys(q, "uri")
+		if host == "m.douban.com" || host == "douban.com" {
+			u.Host = "www.douban.com"
+		}
+		if strings.HasPrefix(u.Path, "/doubanapp/dispatch") {
+			if rawURI := strings.TrimSpace(q.Get("uri")); rawURI != "" {
+				if parsedURI, pErr := url.Parse(rawURI); pErr == nil && parsedURI.Host == "" && parsedURI.Path != "" {
+					cleanPath := "/" + strings.TrimLeft(parsedURI.Path, "/")
+					return "https://www.douban.com" + cleanPath
+				}
+			}
+		}
+		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "xiaoheihe.cn", "xiaoheihe.com"):
+		id := strings.TrimSpace(q.Get("link_id"))
+		if id == "" {
+			if m := xhhLinkPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
+				id = m[1]
+			}
+		}
+		if id != "" && xhhSafeIDRe.MatchString(id) {
+			return "https://www.xiaoheihe.cn/app/bbs/link/" + id
+		}
+		u.Scheme = "https"
+		u.Host = "www.xiaoheihe.cn"
 		u.Fragment = ""
-		u.RawQuery = allowQueryKeys(q, "link_id")
+		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "izuiyou.com", "xiaochuankeji.cn"):
+		u.Scheme = "https"
 		u.Fragment = ""
-		u.RawQuery = allowQueryKeys(q, "pid")
+		rawPid := ""
+		if pids := q["pid"]; len(pids) > 0 {
+			rawPid = strings.TrimSpace(pids[len(pids)-1])
+		} else if m := zuiyouDetailPathRe.FindStringSubmatch(u.Path); len(m) == 2 {
+			rawPid = m[1]
+		}
+		if rawPid != "" && digitsOnlyRe.MatchString(rawPid) {
+			pid := strings.TrimLeft(rawPid, "0")
+			if pid == "" {
+				pid = "0"
+			}
+			return "https://share.xiaochuankeji.cn/hybrid/share/post?pid=" + pid
+		}
+		u.RawQuery = ""
 		return u.String()
 
 	case matchDomain(host, "youtube.com", "youtu.be"):
+		u.Scheme = "https"
 		u.Fragment = ""
 		if host == "youtu.be" {
+			vid := strings.Trim(u.Path, "/")
+			if vid != "" && !strings.Contains(vid, "/") {
+				watch := &url.URL{Scheme: "https", Host: "www.youtube.com", Path: "/watch"}
+				wq := url.Values{"v": {vid}}
+				if tVal := q.Get("t"); tVal != "" && tVal != "0" && tVal != "0s" {
+					wq.Set("t", tVal)
+				}
+				watch.RawQuery = wq.Encode()
+				return watch.String()
+			}
 			u.RawQuery = allowQueryKeys(q, "t")
-		} else if strings.HasPrefix(u.Path, "/watch") {
-			u.RawQuery = allowQueryKeys(q, "v", "t", "list", "index")
+			return u.String()
+		}
+		if host == "m.youtube.com" || host == "youtube.com" {
+			u.Host = "www.youtube.com"
+		}
+		if strings.HasPrefix(u.Path, "/watch") {
+			u.RawQuery = allowQueryKeys(q, "v", "t")
+		} else if strings.HasPrefix(u.Path, "/playlist") {
+			u.RawQuery = allowQueryKeys(q, "list")
+		} else if strings.HasPrefix(u.Path, "/shorts/") {
+			u.Path = strings.TrimRight(u.Path, "/")
+			u.RawQuery = ""
 		} else {
 			u.RawQuery = allowQueryKeys(q, "t")
 		}
 		return u.String()
 
-	case matchDomain(host, "facebook.com", "fb.watch", "fb.com", "snapchat.com"):
+	case matchDomain(host, "facebook.com", "fb.watch", "fb.com"):
+		u.Scheme = "https"
 		u.Fragment = ""
+		if host == "fb.watch" {
+			u.RawQuery = ""
+			return u.String()
+		}
+		if host == "facebook.com" || host == "m.facebook.com" || host == "fb.com" || host == "www.fb.com" {
+			u.Host = "www.facebook.com"
+		}
 		u.RawQuery = allowQueryKeys(q, "v", "id", "story_fbid", "fbid")
+		return u.String()
+
+	case matchDomain(host, "snapchat.com"):
+		u.Scheme = "https"
+		u.Host = "www.snapchat.com"
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawQuery = ""
+		u.Fragment = ""
 		return u.String()
 	}
 
@@ -277,27 +524,9 @@ func CleanTrackingURL(raw string) string {
 }
 
 // WorkIdentityURL returns a token-neutral canonical identity URL for deduplicating
-// cooldowns and cached works across distinct share links (e.g., XHS links with per-share xsec_token).
+// cooldowns and cached works across distinct share links.
 func WorkIdentityURL(raw string) string {
-	cleaned := CleanTrackingURL(raw)
-	if cleaned == "" {
-		return ""
-	}
-	u, err := url.Parse(cleaned)
-	if err != nil || u.Host == "" {
-		return cleaned
-	}
-	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-	if matchDomain(host, "xiaohongshu.com") && u.RawQuery != "" {
-		q, qErr := url.ParseQuery(u.RawQuery)
-		if qErr == nil {
-			q.Del("xsec_token")
-			q.Del("xsec_source")
-			u.RawQuery = q.Encode()
-			return u.String()
-		}
-	}
-	return cleaned
+	return CleanTrackingURL(raw)
 }
 
 // EffectiveSourceURL prefers the resolved CanonicalURL over the raw input SourceURL.
@@ -319,7 +548,19 @@ func DisplayURL(cfg model.Config, raw string) string {
 // DisplayResultURL formats the best URL of a ParseResult according to global CleanURL policy.
 func DisplayResultURL(cfg model.Config, r model.ParseResult) string {
 	if cfg.Media.CleanURL {
-		return CleanTrackingURL(EffectiveSourceURL(r))
+		base := CleanTrackingURL(EffectiveSourceURL(r))
+		if cfg.Media.XHSKeepToken && r.Platform == "xhs" && base != "" {
+			if su, err := url.Parse(strings.TrimSpace(r.SourceURL)); err == nil {
+				if tok := strings.TrimSpace(su.Query().Get("xsec_token")); tok != "" {
+					if bu, bErr := url.Parse(base); bErr == nil {
+						bq := url.Values{"xsec_token": {tok}}
+						bu.RawQuery = bq.Encode()
+						return bu.String()
+					}
+				}
+			}
+		}
+		return base
 	}
 	if strings.TrimSpace(r.SourceURL) != "" {
 		return strings.TrimSpace(r.SourceURL)
@@ -529,6 +770,66 @@ func formatMediaStats(r model.ParseResult, files []model.Artifact) string {
 	return "共 " + strings.Join(parts, " · ")
 }
 
+func formatMediaDuration(r model.ParseResult, files []model.Artifact) string {
+	dur := 0.0
+	for _, f := range files {
+		if (f.Kind == "video" || f.Kind == "audio") && f.Duration > 0 {
+			dur = f.Duration
+			break
+		}
+	}
+	if dur <= 0 {
+		for _, m := range r.Media {
+			if (m.Kind == "video" || m.Kind == "audio") && m.Duration > 0 {
+				dur = m.Duration
+				break
+			}
+		}
+	}
+	total := int(dur + 0.5)
+	if total <= 0 {
+		return ""
+	}
+	h := total / 3600
+	m := (total % 3600) / 60
+	sec := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, sec)
+	}
+	return fmt.Sprintf("%02d:%02d", m, sec)
+}
+
+func sanitizeDisplayText(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\r', '\u200b', '\u200c', '\ufeff', '\u2060', '\u00ad':
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return multiBlankLinesRe.ReplaceAllString(b.String(), "\n\n")
+}
+
+func cleanInlineURLs(s string) string {
+	if !strings.Contains(s, "http://") && !strings.Contains(s, "https://") {
+		return s
+	}
+	return inlineHTTPURLRe.ReplaceAllStringFunc(s, func(matched string) string {
+		trimmed := strings.TrimRight(matched, ".,;:!?]")
+		suffix := matched[len(trimmed):]
+		if trimmed == "" || trimmed == "http://" || trimmed == "https://" {
+			return matched
+		}
+		return CleanTrackingURL(trimmed) + suffix
+	})
+}
+
 func truncateRunes(s string, max int) string {
 	r := []rune(s)
 	if len(r) > max {
@@ -539,6 +840,7 @@ func truncateRunes(s string, max int) string {
 
 var templateTokenOrder = []string{
 	"{raw_clean_url}",
+	"{raw_duration}",
 	"{raw_platform}",
 	"{raw_content}",
 	"{raw_author}",
@@ -548,6 +850,7 @@ var templateTokenOrder = []string{
 	"{raw_url}",
 	"{media_stats}",
 	"{clean_url}",
+	"{duration}",
 	"{platform}",
 	"{content}",
 	"{author}",
@@ -577,10 +880,11 @@ func ResolveMessageTemplate(cfg model.Config, platform string) string {
 	return cfg.Media.MessageTemplate
 }
 
-func prepareCleanedBody(r model.ParseResult, stripTags bool) ([]string, string, string) {
-	_, cleanedTitle := ExtractAndCleanTags(nil, r.Title)
+func prepareCleanedBody(cfg model.Config, r model.ParseResult, stripTags bool) ([]string, string, string) {
+	cleanTitleIn := sanitizeDisplayText(r.Title)
+	_, cleanedTitle := ExtractAndCleanTags(nil, cleanTitleIn)
 	if cleanedTitle == "" {
-		cleanedTitle = strings.TrimSpace(r.Title)
+		cleanedTitle = strings.TrimSpace(cleanTitleIn)
 	}
 
 	contentSource := r.Content
@@ -589,33 +893,41 @@ func prepareCleanedBody(r model.ParseResult, stripTags bool) ([]string, string, 
 		contentSource = r.MarkdownContent
 		isMarkdown = true
 	}
-	contentSource = strings.TrimRight(strings.ReplaceAll(contentSource, "\r\n", "\n"), "\n")
+	contentSource = strings.TrimRight(sanitizeDisplayText(contentSource), "\n")
 
 	var tags []string
 	cleanedContent := contentSource
 	if isMarkdown {
-		tags, _ = ExtractAndCleanTags(r.Tags, r.Content)
+		tags, _ = ExtractAndCleanTags(r.Tags, sanitizeDisplayText(r.Content))
 	} else if stripTags {
 		tags, cleanedContent = ExtractAndCleanTags(r.Tags, contentSource)
 	} else {
 		tags, _ = ExtractAndCleanTags(r.Tags, contentSource)
+	}
+	if cfg.Media.CleanURL && cleanedContent != "" {
+		cleanedContent = cleanInlineURLs(cleanedContent)
 	}
 	return tags, cleanedTitle, cleanedContent
 }
 
 // FullTextForForward returns the cleaned content (up to 8,000 runes) and whether Message 1 truncated it.
 func FullTextForForward(cfg model.Config, r model.ParseResult) (string, bool) {
-	tmpl := ResolveMessageTemplate(cfg, r.Platform)
+	return FullTextForForwardWithTemplate(cfg, ResolveMessageTemplate(cfg, r.Platform), r)
+}
+
+// FullTextForForwardWithTemplate evaluates full-text forward eligibility against an explicit template.
+func FullTextForForwardWithTemplate(cfg model.Config, tmpl string, r model.ParseResult) (string, bool) {
 	if !strings.Contains(tmpl, "{content}") && !strings.Contains(tmpl, "{raw_content}") {
 		return "", false
 	}
 	hasTagsVar := strings.Contains(tmpl, "{tags}") || strings.Contains(tmpl, "{raw_tags}")
-	_, cleanedTitle, cleanedContent := prepareCleanedBody(r, hasTagsVar)
+	_, cleanedTitle, cleanedContent := prepareCleanedBody(cfg, r, hasTagsVar)
 	if strings.TrimSpace(cleanedContent) == "" {
 		return "", false
 	}
 	hasTitleVar := strings.Contains(tmpl, "{title}") || strings.Contains(tmpl, "{raw_title}")
-	if hasTitleVar && (strings.TrimSpace(cleanedContent) == strings.TrimSpace(r.Title) || strings.TrimSpace(cleanedContent) == strings.TrimSpace(cleanedTitle)) {
+	rawCleanTitle := strings.TrimSpace(sanitizeDisplayText(r.Title))
+	if hasTitleVar && (strings.TrimSpace(cleanedContent) == rawCleanTitle || strings.TrimSpace(cleanedContent) == strings.TrimSpace(cleanedTitle)) {
 		return "", false
 	}
 	limit := cfg.Media.SummaryLength
@@ -627,6 +939,61 @@ func FullTextForForward(cfg model.Config, r model.ParseResult) (string, bool) {
 		return "", false
 	}
 	return truncateRunes(cleanedContent, 8000), true
+}
+
+// ForwardTextChunks splits truncated long-form content on natural paragraph/line boundaries
+// into comfortable chat nodes (<= 1,500 runes per node) for Merged Forward reading.
+func ForwardTextChunks(cfg model.Config, r model.ParseResult) []string {
+	return ForwardTextChunksWithTemplate(cfg, ResolveMessageTemplate(cfg, r.Platform), r)
+}
+
+// ForwardTextChunksWithTemplate splits truncated long-form content using an explicit template.
+func ForwardTextChunksWithTemplate(cfg model.Config, tmpl string, r model.ParseResult) []string {
+	fullText, truncated := FullTextForForwardWithTemplate(cfg, tmpl, r)
+	if !truncated || strings.TrimSpace(fullText) == "" {
+		return nil
+	}
+	const maxChunkRunes = 1500
+	runes := []rune(fullText)
+	if len(runes) <= maxChunkRunes {
+		return []string{fullText}
+	}
+	paragraphs := strings.Split(fullText, "\n")
+	var chunks []string
+	var cur strings.Builder
+	curRunes := 0
+	flush := func() {
+		if s := strings.TrimSpace(cur.String()); s != "" {
+			chunks = append(chunks, s)
+		}
+		cur.Reset()
+		curRunes = 0
+	}
+	for _, p := range paragraphs {
+		pRunes := []rune(p)
+		for len(pRunes) > maxChunkRunes {
+			if curRunes > 0 {
+				flush()
+			}
+			chunks = append(chunks, string(pRunes[:maxChunkRunes]))
+			pRunes = pRunes[maxChunkRunes:]
+		}
+		needed := len(pRunes)
+		if curRunes > 0 {
+			needed++ // newline
+		}
+		if curRunes > 0 && curRunes+needed > maxChunkRunes {
+			flush()
+		}
+		if curRunes > 0 {
+			cur.WriteByte('\n')
+			curRunes++
+		}
+		cur.WriteString(string(pRunes))
+		curRunes += len(pRunes)
+	}
+	flush()
+	return chunks
 }
 
 // FormatMessage renders a ParseResult using the effective global or per-platform template.
@@ -648,16 +1015,18 @@ func FormatWithTemplate(cfg model.Config, tmpl string, r model.ParseResult, file
 	hasTagsVar := strings.Contains(tmpl, "{tags}") || strings.Contains(tmpl, "{raw_tags}")
 	hasContentVar := strings.Contains(tmpl, "{content}") || strings.Contains(tmpl, "{raw_content}")
 
-	tags, cleanedTitle, contentSource := prepareCleanedBody(r, hasTagsVar)
+	tags, cleanedTitle, contentSource := prepareCleanedBody(cfg, r, hasTagsVar)
 
-	titleText := strings.TrimSpace(r.Title)
-	if hasTagsVar && cleanedTitle != "" && strings.TrimSpace(r.Content) == strings.TrimSpace(r.Title) {
+	rawInputTitle := strings.TrimSpace(sanitizeDisplayText(r.Title))
+	rawInputContent := strings.TrimSpace(sanitizeDisplayText(r.Content))
+	titleText := rawInputTitle
+	if hasTagsVar && cleanedTitle != "" && rawInputContent == rawInputTitle {
 		titleText = cleanedTitle
 	}
 	rawTitle := truncateRunes(titleText, 300)
-	rawAuthor := truncateRunes(strings.TrimSpace(r.Author), 100)
+	rawAuthor := truncateRunes(strings.TrimSpace(sanitizeDisplayText(r.Author)), 100)
 
-	if hasTitleVar && hasContentVar && titleText != "" && (strings.TrimSpace(contentSource) == strings.TrimSpace(r.Title) || strings.TrimSpace(contentSource) == titleText) {
+	if hasTitleVar && hasContentVar && titleText != "" && (strings.TrimSpace(contentSource) == rawInputTitle || strings.TrimSpace(contentSource) == titleText) {
 		contentSource = ""
 	}
 
@@ -674,6 +1043,7 @@ func FormatWithTemplate(cfg model.Config, tmpl string, r model.ParseResult, file
 
 	cleanURL := CleanTrackingURL(EffectiveSourceURL(r))
 	displayURL := DisplayResultURL(cfg, r)
+	rawDuration := formatMediaDuration(r, files)
 
 	rawPlatform := r.Platform
 	if p, ok := model.PlatformByID(r.Platform); ok {
@@ -689,6 +1059,7 @@ func FormatWithTemplate(cfg model.Config, tmpl string, r model.ParseResult, file
 		"{raw_content}":   rawContent,
 		"{raw_url}":       displayURL,
 		"{raw_clean_url}": cleanURL,
+		"{raw_duration}":  rawDuration,
 		"{raw_platform}":  rawPlatform,
 		"{raw_type}":      rawType,
 		"{media_stats}":   mediaStats,
@@ -699,6 +1070,9 @@ func FormatWithTemplate(cfg model.Config, tmpl string, r model.ParseResult, file
 	}
 	if rawAuthor != "" {
 		values["{author}"] = "作者：" + rawAuthor
+	}
+	if rawDuration != "" {
+		values["{duration}"] = "时长：" + rawDuration
 	}
 	values["{content}"] = rawContent
 	if displayURL != "" {

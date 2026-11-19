@@ -297,6 +297,11 @@ func majorKSRepresentation(rep, set map[string]any, headers map[string]string) (
 }
 func majorKSPhotoMode(photo, payload map[string]any, forceVideo, allowImageCover bool) (*model.ParseResult, error) {
 	r := &model.ParseResult{Platform: "kuaishou", Title: Text(photo["caption"]), Content: Text(photo["caption"]), Headers: majorMediaHeaders("https://www.kuaishou.com/")}
+	for _, item := range Array(photo["tags"]) {
+		if name := strings.TrimSpace(mainlandFirst(Path(item, "name"), item)); name != "" {
+			r.Tags = append(r.Tags, name)
+		}
+	}
 	cover := majorFirstText(majorURL(photo["coverUrl"]), majorURL(photo["coverUrls"]), majorURL(photo["webpCoverUrls"]))
 	if !forceVideo {
 		atlas := majorKSAtlas(photo, payload)
