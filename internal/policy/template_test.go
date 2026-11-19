@@ -375,4 +375,20 @@ func TestDurationSanitizeInlineURLAndForwardTextChunks(t *testing.T) {
 			t.Fatalf("chunk[%d] rune length = %d, want 1..1500", i, n)
 		}
 	}
+
+	// Regression: inline URL followed immediately by Chinese sentence punctuation without whitespace.
+	cjkSentenceRes := model.ParseResult{
+		Platform:  "zhihu",
+		Title:     "标点边界测试",
+		Content:   "详情见https://www.zhihu.com/appview/p/680011223?utm_source=copy。下一句内容保留！",
+		SourceURL: "https://zhuanlan.zhihu.com/p/680011223",
+	}
+	if gotCJK := FormatWithTemplate(cfg, "{content}", cjkSentenceRes, nil); gotCJK != "详情见https://zhuanlan.zhihu.com/p/680011223。下一句内容保留！" {
+		t.Fatalf("inline URL CJK punctuation boundary failed: got %q", gotCJK)
+	}
+
+	// Regression: ForwardTextChunksWithTemplate respects an explicit preview template override.
+	if chunks := ForwardTextChunksWithTemplate(cfg, "{title}", longArticle); len(chunks) != 0 {
+		t.Fatalf("expected nil chunks for title-only preview template, got %d", len(chunks))
+	}
 }

@@ -383,7 +383,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 				videos++
 			}
 		}
-		textChunks := policy.ForwardTextChunks(cfg, *res)
+		textChunks := policy.ForwardTextChunksWithTemplate(cfg, effectiveTemplate, *res)
 		msg2Mode := "none"
 		showCover := false
 		if cfg.Media.AutoDownload {
@@ -411,7 +411,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a store.Session, to
 			"media_count":         len(res.Media),
 			"visual_items":        visualItems,
 			"message2_mode":       msg2Mode,
-			"full_text_forward":   len(textChunks) > 0 && (msg2Mode == "merged_forward" || msg2Mode == "text_forward"),
+			"full_text_forward":   cfg.Media.ForwardEnabled && len(textChunks) > 0,
 			"forward_text_chunks": textChunks,
 		})
 		return

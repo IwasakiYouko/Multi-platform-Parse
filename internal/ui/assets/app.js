@@ -114,6 +114,7 @@
     sandboxUrl: '',
     sandboxTemplate: '',
     sandboxLoading: false,
+    sandboxReqSeq: 0,
     sandboxResult: null,
     status: null,
     platforms: [],
@@ -193,7 +194,30 @@
     return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   }
 
-  // 前端标准直链快速净化预览（对齐后端 CleanTrackingURL）
+  const TRACKING_QUERY_KEYS = new Set([
+    'spm', 'spm_id_from', 'vd_source', 'from_spmid', 'from', 'seid', 'share_source',
+    'share_medium', 'share_plat', 'share_session_id', 'share_tag', 'share_from', 'bbid', 'ts', 'unique_k',
+    'igshid', 'igsh', 'fbclid', 'gclid', 'msclkid', 'twclid', 'ttclid', 'si', 'pp', 'feature',
+    'xsec_source', 'xsec_token', 'xhsshare', 'appuid', 'apptime', 'share_id',
+    'tt_from', 'utm_psn', 'mibext', 'mibextid', 'rdid', '_t', '_r', 'is_from_webapp', 'sender_device',
+    'chksm', 'mpshare', 'scene', 'srcid', 'sharer_shareinfo', 'sharer_shareid', 'isappinstalled',
+  ]);
+
+  function allowQueryParams(params, keys) {
+    const out = new URLSearchParams();
+    for (const k of keys) {
+      for (const val of params.getAll(k)) {
+        if ((k === 'p' || k === 'pn') && (val === '' || val === '1')) continue;
+        if (k === 'see_lz' && (val === '' || val === '0' || val.toLowerCase() === 'false')) continue;
+        if (k === 't' && (val === '' || val === '0' || val === '0.0' || val === '0s')) continue;
+        out.append(k, val);
+      }
+    }
+    const qs = out.toString();
+    return qs ? `?${qs}` : '';
+  }
+
+  // 前端标准直链快速净化预览（严格对齐后端 CleanTrackingURL，保留标识参数）
   function cleanTrackingUrlJS(raw) {
     const s = String(raw || '').trim();
     if (!s) return '';
@@ -203,69 +227,188 @@
     } catch {
       return s;
     }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return s;
     const host = u.hostname.toLowerCase().replace(/\.$/, '');
     const matchHost = (...domains) => domains.some((d) => host === d || host.endsWith(`.${d}`));
     if (matchHost('xiaoheihe.cn', 'xiaoheihe.com')) {
       const id = u.searchParams.get('link_id') || ((u.pathname.match(/\/link\/([A-Za-z0-9_-]+)/) || [])[1] || '');
-      return id ? `https://www.xiaoheihe.cn/app/bbs/link/${id}` : `https://www.xiaoheihe.cn${u.pathname}`;
+      return (id && /^[A-Za-z0-9_-]+$/.test(id)) ? `https://www.xiaoheihe.cn/app/bbs/link/${id}` : `https://www.xiaoheihe.cn${u.pathname}`;
+    }
+    if (matchHost('xhslink.com', 'xhslink.cn')) {
+      return `https://${host}${u.pathname}`;
     }
     if (matchHost('xiaohongshu.com')) {
-      let path = u.pathname.replace(/\/+$/, '');
-      if (path.startsWith('/discovery/item/')) path = `/explore/${path.slice('/discovery/item/'.length)}`;
-      const prof = path.match(/^\/user\/profile\/[^/]+\/([0-9a-fA-F]{16,32})/);
-      if (prof) path = `/explore/${prof[1]}`;
+      let path = u.pathname;
+      if (path.startsWith('/discovery/item/')) {
+        const id = path.slice('/discovery/item/'.length).replace(/^\/+|\/+$/g, '');
+        if (id && !id.includes('/')) path = `/explore/${id}`;
+      } else {
+        const prof = path.match(/^\/user\/profile\/[^/?#]+\/([0-9a-fA-F]{16,32})(?:\/|$)/);
+        if (prof) path = `/explore/${prof[1]}`;
+        else if (path.startsWith('/explore/')) path = path.replace(/\/+$/, '');
+      }
       return `https://www.xiaohongshu.com${path}`;
+    }
+    if (matchHost('b23.tv', 'bili2233.cn')) {
+      return `https://${host}${u.pathname}${allowQueryParams(u.searchParams, ['p'])}`;
     }
     if (matchHost('bilibili.com')) {
       if (host === 't.bilibili.com' || u.pathname.startsWith('/opus/') || u.pathname.startsWith('/dynamic/')) {
-        const dm = u.pathname.match(/\/(?:opus\/|dynamic\/)?(\d{15,22})/);
+        const dm = u.pathname.match(/^\/(?:opus\/|dynamic\/)?(\d{15,22})(?:\/|$)/);
         if (dm) return `https://www.bilibili.com/opus/${dm[1]}`;
       }
-      const p = u.searchParams.get('p');
-      const base = `https://www.bilibili.com${u.pathname.replace(/\/+$/, '')}`;
-      return (u.pathname.startsWith('/video/') && p && p !== '1') ? `${base}?p=${encodeURIComponent(p)}` : base;
+      const rm = u.pathname.match(/^\/read\/mobile\/(\d+)(?:\/|$)/);
+      if (rm) return `https://www.bilibili.com/read/cv${rm[1]}`;
+      const rid = u.searchParams.get('id') || '';
+      if (u.pathname === '/read/mobile' && /^\d+$/.test(rid)) {
+        return `https://www.bilibili.com/read/cv${rid}`;
+      }
+      const outHost = (host === 'm.bilibili.com' || host === 'bilibili.com') ? 'www.bilibili.com' : host;
+      const basePath = u.pathname.replace(/\/+$/, '');
+      if (u.pathname.startsWith('/video/')) {
+        return `https://${outHost}${basePath}${allowQueryParams(u.searchParams, ['p', 't'])}`;
+      }
+      return `https://${outHost}${basePath}`;
     }
     if (matchHost('douyin.com', 'iesdouyin.com')) {
       if (host === 'v.douyin.com') return `https://v.douyin.com${u.pathname}`;
-      const vm = u.pathname.match(/^\/(?:share\/)?video\/(\d+)/);
+      const vm = u.pathname.match(/^\/(?:share\/)?video\/(\d+)(?:\/|$)/);
       if (vm) return `https://www.douyin.com/video/${vm[1]}`;
-      const nm = u.pathname.match(/^\/(?:share\/)?(?:note|slides)\/(\d+)/);
+      const nm = u.pathname.match(/^\/(?:share\/)?(?:note|slides)\/(\d+)(?:\/|$)/);
       if (nm) return `https://www.douyin.com/note/${nm[1]}`;
-      const mid = u.searchParams.get('modal_id');
-      if (mid && /^\d+$/.test(mid)) return `https://www.douyin.com/video/${mid}`;
-      return `${u.origin}${u.pathname}`;
+      for (const k of ['modal_id', 'vid', 'aweme_id']) {
+        const id = u.searchParams.get(k) || '';
+        if (/^\d+$/.test(id)) return `https://www.douyin.com/video/${id}`;
+      }
+      return `https://${host}${u.pathname}`;
     }
-    if (matchHost('weixin.qq.com', 'channels.weixin.qq.com') && !matchHost('mp.weixin.qq.com')) {
-      const sm = u.pathname.match(/^\/sph\/([A-Za-z0-9_-]+)/);
+    if (matchHost('kuaishou.com', 'chenzhongtech.com', 'gifshow.com')) {
+      const km = u.pathname.match(/^\/(?:short-video|fw\/photo)\/([^/?#]+)(?:\/|$)/);
+      if (km) return `https://www.kuaishou.com/short-video/${km[1].replace(/\.html$/, '')}`;
+      const pid = (u.searchParams.get('photoId') || '').trim();
+      if (pid && /^[A-Za-z0-9_-]+$/.test(pid)) return `https://www.kuaishou.com/short-video/${pid}`;
+      return `https://${host}${u.pathname}`;
+    }
+    if (matchHost('weibo.com', 'weibo.cn')) {
+      if (u.pathname.startsWith('/show')) {
+        const fid = (u.searchParams.get('fid') || '').trim();
+        if (fid && !/[ /?#&]/.test(fid)) return `https://weibo.com/tv/show/${fid}`;
+        return `https://${host}${u.pathname}${allowQueryParams(u.searchParams, ['fid'])}`;
+      }
+      const wHost = (host === 'weibo.com' || host === 'www.weibo.com') ? 'weibo.com' : host;
+      return `https://${wHost}${u.pathname.replace(/\/+$/, '')}`;
+    }
+    if (matchHost('mp.weixin.qq.com')) {
+      if (u.pathname.startsWith('/s/') && u.pathname.length > 3) {
+        return `https://mp.weixin.qq.com${u.pathname}`;
+      }
+      return `https://mp.weixin.qq.com${u.pathname}${allowQueryParams(u.searchParams, ['__biz', 'mid', 'idx', 'sn'])}`;
+    }
+    if (matchHost('weixin.qq.com', 'channels.weixin.qq.com', 'finder.video.qq.com')) {
+      const sm = u.pathname.match(/^\/sph\/([A-Za-z0-9_-]+)(?:\/|$)/);
       if (sm) return `https://weixin.qq.com/sph/${sm[1]}`;
-      const id = u.searchParams.get('id');
-      if (id) return `https://weixin.qq.com/sph/${id}`;
+      const id = u.searchParams.get('id') || '';
+      if (u.pathname === '/finder-preview/pages/sph' && /^[A-Za-z0-9_-]+$/.test(id)) {
+        return `https://weixin.qq.com/sph/${id}`;
+      }
+      return `https://${host}${u.pathname}`;
     }
     if (matchHost('tieba.baidu.com', 'tiebap.baidu.com')) {
-      const keep = new URLSearchParams();
-      if (u.searchParams.get('see_lz') === '1') keep.set('see_lz', '1');
-      const pn = u.searchParams.get('pn');
-      if (pn && pn !== '1') keep.set('pn', pn);
-      const q = keep.toString();
-      return `https://tieba.baidu.com${u.pathname}${q ? `?${q}` : ''}`;
+      const tm = u.pathname.match(/^\/p\/(\d+)(?:\/|$)/);
+      const tPath = tm ? `/p/${tm[1]}` : u.pathname;
+      return `https://tieba.baidu.com${tPath}${allowQueryParams(u.searchParams, ['see_lz', 'pn'])}`;
     }
     if (matchHost('izuiyou.com', 'xiaochuankeji.cn')) {
       const pids = u.searchParams.getAll('pid');
-      const rawPid = pids.length ? pids[pids.length - 1] : ((u.pathname.match(/^\/detail\/(\d+)/) || [])[1] || '');
-      if (rawPid) return `https://share.xiaochuankeji.cn/hybrid/share/post?pid=${rawPid.replace(/^0+/, '') || '0'}`;
+      const rawPid = pids.length ? pids[pids.length - 1].trim() : ((u.pathname.match(/^\/detail\/(\d+)(?:\/|$)/) || [])[1] || '');
+      if (rawPid && /^\d+$/.test(rawPid)) {
+        return `https://share.xiaochuankeji.cn/hybrid/share/post?pid=${rawPid.replace(/^0+/, '') || '0'}`;
+      }
+      return `https://${host}${u.pathname}`;
     }
     if (matchHost('youtube.com', 'youtu.be')) {
       if (host === 'youtu.be') {
         const vid = u.pathname.replace(/^\/+|\/+$/g, '');
-        return vid ? `https://www.youtube.com/watch?v=${vid}` : `https://youtu.be${u.pathname}`;
+        if (vid && !vid.includes('/')) {
+          const qp = new URLSearchParams();
+          qp.set('v', vid);
+          const tVal = u.searchParams.get('t') || '';
+          if (tVal && tVal !== '0' && tVal !== '0s') qp.set('t', tVal);
+          return `https://www.youtube.com/watch?${qp.toString()}`;
+        }
+        return `https://youtu.be${u.pathname}`;
+      }
+      const ytHost = (host === 'm.youtube.com' || host === 'youtube.com') ? 'www.youtube.com' : host;
+      if (host === 'music.youtube.com') {
+        return `https://music.youtube.com${u.pathname}${allowQueryParams(u.searchParams, ['v', 'list'])}`;
       }
       if (u.pathname.startsWith('/watch')) {
-        const v = u.searchParams.get('v');
-        return v ? `https://www.youtube.com/watch?v=${encodeURIComponent(v)}` : 'https://www.youtube.com/watch';
+        const listVal = u.searchParams.get('list') || '';
+        const keys = listVal.startsWith('RD') ? ['v', 't'] : ['v', 't', 'list', 'index'];
+        return `https://${ytHost}${u.pathname}${allowQueryParams(u.searchParams, keys)}`;
+      }
+      if (u.pathname.startsWith('/playlist')) {
+        return `https://${ytHost}${u.pathname}${allowQueryParams(u.searchParams, ['list'])}`;
+      }
+      return `https://${ytHost}${u.pathname}`;
+    }
+    if (matchHost('facebook.com', 'fb.watch', 'fb.com')) {
+      return `https://${host}${u.pathname}${allowQueryParams(u.searchParams, ['v', 'id', 'story_fbid', 'fbid'])}`;
+    }
+    if (matchHost('twitter.com', 'x.com', 'fixupx.com')) {
+      return `https://x.com${u.pathname.replace(/\/+$/, '')}`;
+    }
+    if (matchHost('instagram.com', 'instagr.am')) {
+      return `https://www.instagram.com${u.pathname}`;
+    }
+    if (matchHost('threads.net', 'threads.com')) {
+      return `https://www.threads.com${u.pathname.replace(/\/+$/, '')}`;
+    }
+    if (matchHost('tiktok.com')) {
+      const tm = u.pathname.match(/^\/v\/(\d+)(?:\.html)?(?:\/|$)/);
+      if (tm) return `https://www.tiktok.com/@_/video/${tm[1]}`;
+      return `https://${host}${u.pathname}`;
+    }
+    if (matchHost('zhihu.com', 'zhihu.link')) {
+      if (matchHost('zhihu.link')) return `https://${host}${u.pathname}`;
+      const zm = u.pathname.match(/^\/(?:appview\/)?p\/(\d+)(?:\/|$)/);
+      if (zm) return `https://zhuanlan.zhihu.com/p/${zm[1]}`;
+      const zHost = (host === 'm.zhihu.com' || host === 'zhihu.com') ? 'www.zhihu.com' : host;
+      return `https://${zHost}${u.pathname.replace(/\/+$/, '')}`;
+    }
+    if (matchHost('douban.com')) {
+      if (u.pathname.startsWith('/doubanapp/dispatch')) {
+        const uri = (u.searchParams.get('uri') || '').trim();
+        if (uri.startsWith('/')) return `https://www.douban.com/${uri.replace(/^\/+/, '')}`;
+      }
+      const dHost = (host === 'm.douban.com' || host === 'douban.com') ? 'www.douban.com' : host;
+      return `https://${dHost}${u.pathname}`;
+    }
+    if (matchHost('coolapk.com', 'coolapk1s.com')) {
+      return `https://www.coolapk.com${u.pathname.replace(/\/+$/, '')}`;
+    }
+    if (matchHost('toutiao.com')) {
+      const im = u.pathname.match(/^\/(?:(?:group|item)\/|i|a)(\d+)(?:\/|$)/);
+      if (im) return `https://www.toutiao.com/article/${im[1]}/`;
+      const ttHost = (host === 'm.toutiao.com' || host === 'toutiao.com') ? 'www.toutiao.com' : host;
+      return `https://${ttHost}${u.pathname}`;
+    }
+    if (matchHost('bgm.tv', 'bangumi.tv', 'chii.in')) {
+      return `https://bgm.tv${u.pathname.replace(/\/+$/, '')}`;
+    }
+    if (matchHost('t.co', 'pipix.com', 'snapchat.com', 'medium.com', 'dou.bz', 'douc.cc')) {
+      return `https://${host}${u.pathname}`;
+    }
+    // 未知站点或自定义链接：仅剔除明确追踪参数，完整保留业务标识查询项
+    for (const k of [...u.searchParams.keys()]) {
+      const lk = k.toLowerCase();
+      if (lk.startsWith('utm_') || lk.startsWith('share_') || TRACKING_QUERY_KEYS.has(lk)) {
+        u.searchParams.delete(k);
       }
     }
-    u.search = '';
-    u.hash = '';
+    if (u.hash && !u.hash.startsWith('#/') && !u.hash.startsWith('#!')) {
+      u.hash = '';
+    }
     return u.toString();
   }
 
@@ -781,8 +924,11 @@
   }
 
   function renderBrandBadge(platformId, fallbackName = '') {
-    const b = PLATFORM_BRANDS[platformId] || { label: (fallbackName || platformId || 'MP').slice(0, 2).toUpperCase(), color: '#2563eb' };
-    return `<span class="platform-brand-badge" style="background:${b.color};">${esc(b.label)}</span>`;
+    const entry = PLATFORM_BRANDS[platformId];
+    const [label, bg] = Array.isArray(entry)
+      ? entry
+      : [(fallbackName || platformId || 'MP').slice(0, 2).toUpperCase(), 'linear-gradient(135deg,#2563eb,#3b82f6)'];
+    return `<span class="platform-brand-badge" style="background:${bg};">${esc(label)}</span>`;
   }
 
   function renderQQBubbleRow(innerBubbleHTML) {
@@ -807,7 +953,11 @@
       return '<div class="text-xs muted" style="margin-top:8px;padding-left:42px;">消息 2：无（单图或精炼短文仅发送消息 1，零冗余刷屏）</div>';
     }
     if (mode === 'direct_video') {
-      return renderQQBubbleRow('<div class="chat-bubble chat-bubble-msg2"><div class="chat-msg-tag">消息 2 · 单视频直发</div>🎬 [1080p 高清无水印直出视频 · 群内点击直接播放]</div>');
+      const videoRow = renderQQBubbleRow('<div class="chat-bubble chat-bubble-msg2"><div class="chat-msg-tag">消息 2 · 单视频直发</div>🎬 [1080p 高清无水印直出视频 · 群内点击直接播放]</div>');
+      if (fullTextInForward) {
+        return videoRow + renderMsg2Mock('text_forward', 0, platformLabel, authorLabel, true, forwardChunks, []);
+      }
+      return videoRow;
     }
     const sender = authorLabel ? `${platformLabel} · ${authorLabel}` : platformLabel;
     if (mode === 'text_forward') {
@@ -966,7 +1116,7 @@
               <div><span class="muted">生效模板：</span><code class="mono text-xs">${esc(state.sandboxResult.effective_template || '(不输出文本)')}</code></div>
               ${r.cookie_expired ? '<div class="text-xs" style="color:var(--warn);">⚠️ 检测到当前配置的平台 Cookie 已失效，本次已自动回退游客通道</div>' : ''}
             </div>
-            ${renderUrlDiffInspector(state.sandboxUrl, r.source_url, displayUrl)}
+            ${renderUrlDiffInspector(state.sandboxResult.request_url || state.sandboxUrl, r.source_url, displayUrl)}
             ${streamPills ? `<div><span class="text-xs muted">提取媒体流明细：</span><div class="media-stream-list">${streamPills}</div></div>` : ''}
           </div>
           <div class="chat-preview-box">
@@ -2427,20 +2577,28 @@
       if (action === 'replay-in-sandbox') {
         const targetUrl = (actionEl.dataset.url || '').trim();
         if (!targetUrl) return;
+        const reqId = ++state.sandboxReqSeq;
+        const reqTpl = state.sandboxTemplate;
         state.sandboxUrl = targetUrl;
         state.sandboxLoading = true;
         setRoute('overview');
         try {
-          state.sandboxResult = await api('/api/parse/preview', {
+          const res = await api('/api/parse/preview', {
             method: 'POST',
-            body: { url: state.sandboxUrl, template: state.sandboxTemplate },
+            body: { url: targetUrl, template: reqTpl },
           });
+          if (reqId !== state.sandboxReqSeq) return;
+          state.sandboxUrl = targetUrl;
+          state.sandboxResult = Object.assign({ request_url: targetUrl }, res);
           toast('沙盒重放预览完成', 'success');
         } catch (err) {
+          if (reqId !== state.sandboxReqSeq) return;
           toast(err.message, 'error');
         } finally {
-          state.sandboxLoading = false;
-          renderRoute();
+          if (reqId === state.sandboxReqSeq) {
+            state.sandboxLoading = false;
+            renderRoute();
+          }
         }
         return;
       }
@@ -2644,34 +2802,44 @@
       if (action === 'sandbox-preview' || action === 'sandbox-enqueue') {
         const urlInput = $('sandbox-url-input');
         const tplInput = $('sandbox-template-input');
-        state.sandboxUrl = urlInput ? urlInput.value.trim() : state.sandboxUrl;
-        state.sandboxTemplate = tplInput ? tplInput.value : state.sandboxTemplate;
-        if (!state.sandboxUrl) {
+        const reqUrl = urlInput ? urlInput.value.trim() : state.sandboxUrl;
+        const reqTpl = tplInput ? tplInput.value : state.sandboxTemplate;
+        state.sandboxUrl = reqUrl;
+        state.sandboxTemplate = reqTpl;
+        if (!reqUrl) {
           toast('请先输入要测试的链接或分享口令', 'error');
           return;
         }
+        const reqId = ++state.sandboxReqSeq;
         state.sandboxLoading = true;
         renderRoute();
         try {
           if (action === 'sandbox-preview') {
-            state.sandboxResult = await api('/api/parse/preview', {
+            const res = await api('/api/parse/preview', {
               method: 'POST',
-              body: { url: state.sandboxUrl, template: state.sandboxTemplate },
+              body: { url: reqUrl, template: reqTpl },
             });
+            if (reqId !== state.sandboxReqSeq) return;
+            state.sandboxUrl = reqUrl;
+            state.sandboxResult = Object.assign({ request_url: reqUrl }, res);
             toast('解析与消息排版预览完成', 'success');
           } else {
             const res = await api('/api/parse', {
               method: 'POST',
-              body: { url: state.sandboxUrl },
+              body: { url: reqUrl },
             });
+            if (reqId !== state.sandboxReqSeq) return;
             toast(`任务已入队执行 (ID: ${res.id.slice(0, 8)}…)`, 'success');
             await refreshRuntimeOnly();
           }
         } catch (err) {
+          if (reqId !== state.sandboxReqSeq) return;
           toast(err.message, 'error');
         } finally {
-          state.sandboxLoading = false;
-          renderRoute();
+          if (reqId === state.sandboxReqSeq) {
+            state.sandboxLoading = false;
+            renderRoute();
+          }
         }
         return;
       }

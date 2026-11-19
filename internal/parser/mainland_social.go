@@ -231,8 +231,10 @@ func mainlandWeibo(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 					return nil, fmt.Errorf("微博混合媒体缺少视频地址")
 				}
 			case "livephoto", "gif":
-				if len(item.Data) > 0 && (Text(item.Data["video"]) != "" || Text(Path(item.Data, "largest", "url")) != "") {
-					_ = socialWeiboPicture(r, item.Data, item.Type)
+				if len(item.Data) > 0 && (Text(item.Data["video"]) != "" || Text(Path(item.Data, "thumbnail", "url")) != "" || Text(Path(item.Data, "largest", "url")) != "") {
+					if err := socialWeiboPicture(r, item.Data, item.Type); err != nil {
+						return nil, err
+					}
 				}
 			case "article":
 			default:
@@ -430,17 +432,17 @@ func mainlandPipix(ctx context.Context, c *http.Client, raw, cookie string) (*mo
 		if len(urls) == 0 || len(covers) == 0 {
 			return nil, fmt.Errorf("皮皮虾解析失败: 缺少视频或封面")
 		}
-		metaSource := video
+		meta := make(map[string]json.Number, 3)
 		for _, key := range []string{"duration", "height", "width"} {
-			if _, ok := metaSource[key].(json.Number); !ok {
-				if _, fbOk := fallbackVideo[key].(json.Number); fbOk {
-					metaSource = fallbackVideo
-				} else {
-					return nil, fmt.Errorf("皮皮虾解析失败: 缺少视频参数 %s", key)
-				}
+			if v, ok := video[key].(json.Number); ok {
+				meta[key] = v
+			} else if fb, fbOk := fallbackVideo[key].(json.Number); fbOk {
+				meta[key] = fb
+			} else {
+				return nil, fmt.Errorf("皮皮虾解析失败: 缺少视频参数 %s", key)
 			}
 		}
-		mainlandAdd(r, "video", Text(Path(urls[0], "url")), map[string]any{"width": metaSource["width"], "height": metaSource["height"], "duration": math.Ceil(Number(metaSource["duration"])), "thumbnail": Path(covers[0], "url")})
+		mainlandAdd(r, "video", Text(Path(urls[0], "url")), map[string]any{"width": meta["width"], "height": meta["height"], "duration": math.Ceil(Number(meta["duration"])), "thumbnail": Path(covers[0], "url")})
 		return mainlandFinish(r, true)
 	}
 	for _, image := range Array(Path(item, "cover", "download_list")) {

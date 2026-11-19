@@ -108,7 +108,7 @@ var (
 	tiktokMobileVPathRe = regexp.MustCompile(`^/v/([0-9]+)(?:\.html)?(?:/|$)`)
 	zuiyouDetailPathRe  = regexp.MustCompile(`^/detail/([0-9]+)(?:/|$)`)
 	digitsOnlyRe        = regexp.MustCompile(`^[0-9]+$`)
-	inlineHTTPURLRe     = regexp.MustCompile(`https?://[^\s<>"'()（）【】「」『』]+`)
+	inlineHTTPURLRe     = regexp.MustCompile(`https?://[^\s<>"'()（）【】「」『』《》，。；！？、：]+`)
 	multiBlankLinesRe   = regexp.MustCompile(`(?:\n[ \t]*){3,}`)
 
 	xhsTopicTagRe    = regexp.MustCompile(`#([^#\[\]\r\n]{1,40})\[话题\]#`)
@@ -821,9 +821,9 @@ func cleanInlineURLs(s string) string {
 		return s
 	}
 	return inlineHTTPURLRe.ReplaceAllStringFunc(s, func(matched string) string {
-		trimmed := strings.TrimRight(matched, ".,;!，。；！？、]")
+		trimmed := strings.TrimRight(matched, ".,;:!?]")
 		suffix := matched[len(trimmed):]
-		if trimmed == "" {
+		if trimmed == "" || trimmed == "http://" || trimmed == "https://" {
 			return matched
 		}
 		return CleanTrackingURL(trimmed) + suffix
@@ -912,7 +912,11 @@ func prepareCleanedBody(cfg model.Config, r model.ParseResult, stripTags bool) (
 
 // FullTextForForward returns the cleaned content (up to 8,000 runes) and whether Message 1 truncated it.
 func FullTextForForward(cfg model.Config, r model.ParseResult) (string, bool) {
-	tmpl := ResolveMessageTemplate(cfg, r.Platform)
+	return FullTextForForwardWithTemplate(cfg, ResolveMessageTemplate(cfg, r.Platform), r)
+}
+
+// FullTextForForwardWithTemplate evaluates full-text forward eligibility against an explicit template.
+func FullTextForForwardWithTemplate(cfg model.Config, tmpl string, r model.ParseResult) (string, bool) {
 	if !strings.Contains(tmpl, "{content}") && !strings.Contains(tmpl, "{raw_content}") {
 		return "", false
 	}
@@ -940,7 +944,12 @@ func FullTextForForward(cfg model.Config, r model.ParseResult) (string, bool) {
 // ForwardTextChunks splits truncated long-form content on natural paragraph/line boundaries
 // into comfortable chat nodes (<= 1,500 runes per node) for Merged Forward reading.
 func ForwardTextChunks(cfg model.Config, r model.ParseResult) []string {
-	fullText, truncated := FullTextForForward(cfg, r)
+	return ForwardTextChunksWithTemplate(cfg, ResolveMessageTemplate(cfg, r.Platform), r)
+}
+
+// ForwardTextChunksWithTemplate splits truncated long-form content using an explicit template.
+func ForwardTextChunksWithTemplate(cfg model.Config, tmpl string, r model.ParseResult) []string {
+	fullText, truncated := FullTextForForwardWithTemplate(cfg, tmpl, r)
 	if !truncated || strings.TrimSpace(fullText) == "" {
 		return nil
 	}

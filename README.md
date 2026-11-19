@@ -88,7 +88,7 @@ volumes:
   media:
 ```
 
-**从旧版升级至 v2.2.0**：先停止旧版服务（`docker compose down --remove-orphans`，**切勿加 `-v`**），使用新版 `compose.yaml` 与 `IMAGE_TAG=2.2.0` 执行 `docker compose up -d --wait`。启动时程序会自动迁移配置架构版本（含默认画质平滑升级至 `1080p`）并保留既有自定义策略。
+**从旧版升级至 v2.2.0**：先停止旧版服务（`docker compose down --remove-orphans`，**切勿加 `-v`**），使用新版 `compose.yaml` 与 `IMAGE_TAG=2.2.0` 执行 `docker compose up -d --wait`。启动时程序会自动迁移配置架构版本并保留既有自定义策略（已有部署若希望开启 1080p 直传，可在面板「媒体与网络代理」将画质切换为 `1080p`）。
 
 ### 可选添加项
 

@@ -253,10 +253,10 @@ func NormalizeConfig(c *Config) {
 		}
 	}
 	if c.SchemaVersion < CurrentConfigSchema {
-		if c.Media.Quality == 720 {
-			c.Media.Quality = 1080
-		}
 		c.SchemaVersion = CurrentConfigSchema
+	}
+	if c.Media.Quality <= 0 {
+		c.Media.Quality = 1080
 	}
 	if c.Policy.MaxLinksPerMsg <= 0 {
 		c.Policy.MaxLinksPerMsg = 3

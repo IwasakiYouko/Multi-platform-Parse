@@ -120,16 +120,23 @@ func (p *preparation) prepareImage(ctx context.Context, path string) (model.Arti
 	_, _ = file.Seek(0, io.SeekStart)
 
 	var webpFallbackReader []byte
-	config, format, err := image.DecodeConfig(contextReader{ctx, file})
-	file.Close()
-	if err != nil && isAnimatedWebP(head[:hn]) {
+	var config image.Config
+	var format string
+	if isAnimatedWebP(head[:hn]) {
+		file.Close()
 		rawBytes, rErr := os.ReadFile(path)
-		if rErr == nil {
-			if singleWebP, ok := extractFirstANMFWebP(rawBytes); ok {
-				webpFallbackReader = singleWebP
-				config, format, err = image.DecodeConfig(contextReader{ctx, bytes.NewReader(singleWebP)})
-			}
+		if rErr != nil {
+			return empty, rErr
 		}
+		singleWebP, ok := extractFirstANMFWebP(rawBytes)
+		if !ok {
+			return empty, errors.New("图片头无效或格式不支持")
+		}
+		webpFallbackReader = singleWebP
+		config, format, err = image.DecodeConfig(contextReader{ctx, bytes.NewReader(singleWebP)})
+	} else {
+		config, format, err = image.DecodeConfig(contextReader{ctx, file})
+		file.Close()
 	}
 	if err != nil {
 		return empty, errors.New("图片头无效或格式不支持")

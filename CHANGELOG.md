@@ -7,7 +7,7 @@
   - **小黑盒 API 分享外壳解包**：将 `https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?link_id={id}` 与移动端域名统一重写为 `https://www.xiaoheihe.cn/app/bbs/link/{id}`。
   - **全平台域名与路由归一**：覆盖微信视频号（`channels.weixin.qq.com` / `exportkey` → `https://weixin.qq.com/sph/{id}`）、知乎（解析 `zhihu.link` 短链重定向、`/appview/p/{id}` → `https://zhuanlan.zhihu.com/p/{id}`）、百度贴吧（剔除 `see_lz=0` 与 `pn=1`）、微博（`video.weibo.com/show?fid=...` → `weibo.com/tv/show/...` 及标准博文直链）、豆瓣（解包 `/doubanapp/dispatch?uri=...`）、酷安（`coolapk1s.com` 归一）、今日头条、抖音、TikTok、B 站（剔除 `t=0` / `start_progress`，动态归一 `/opus/{id}`）、YouTube（`youtu.be` 归一并剔除 `&list=RD...` 电台追踪）等全部 24 个注册平台，并同步清洗 `{content}` 正文内嵌链接与扩充 30+ 追踪参数黑名单。
 - **媒体处理画质与吞吐全面升级**：
-  - **默认视频画质升级至 `1080p`**：`CurrentConfigSchema` 升级至 `3`（旧版未改动默认 `720p` 自动平滑迁移至 `1080p`），符合规范的 1080p H.264 (`yuv420p`) 原画流直接 `-c:v copy` 毫秒级无损直传，免除 720p 重编码画质折损与 CPU 开销。
+  - **默认视频画质升级至 `1080p`**：`CurrentConfigSchema` 升级至 `3`，全新安装默认目标画质由 `720p` 升级至 `1080p`（同时保留旧版已显式保存的自定义画质设定），符合规范的 1080p H.264 (`yuv420p`) 原画流直接 `-c:v copy` 毫秒级无损直传，免除 720p 重编码画质折损与 CPU 开销。
   - **纯 Go 原生 WebP 解码与超长截图无损保真**：引入 `golang.org/x/image/webp` 原生解码静态 WebP（并支持动图 WebP `ANMF` 首帧提取），在 50MP 安全边界内支持最高 `16384px` 超长截图/条漫无损直出（修复原 FFmpeg `4096px` 缩放导致的文字模糊，且不再占用 `TranscodeConcurrency` 视频转码槽位）。
   - **多平台流优选与容灾增强**：皮皮虾优先提取无水印 `origin_video_download` / `video_high`；B 站自动降权 `*.mcdn.bilivideo.*` / `*.szbdyd.com` 慢速 PCDN 节点并新增 `AudioBackupURLs` 音轨多源容灾回退；兜底视频抽帧自动跳过片头黑场（`0.8s–1.0s` 智能寻帧 + `0s` 回退）并提升至 `1280px` 高清封面。
 - **产品体验与模板能力迭代**：

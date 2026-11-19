@@ -84,7 +84,7 @@ func majorDouyin(ctx context.Context, c *http.Client, raw, cookie string) (*mode
 	}
 	ensureCanonical := func(r *model.ParseResult) *model.ParseResult {
 		if r != nil && r.CanonicalURL == "" && id != "" {
-			if r.Type == "image" {
+			if r.Type == "image" || r.Type == "multimedia" {
 				r.CanonicalURL = "https://www.douyin.com/note/" + id
 			} else {
 				r.CanonicalURL = "https://www.douyin.com/video/" + id

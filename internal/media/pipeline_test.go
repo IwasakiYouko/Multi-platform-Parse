@@ -291,3 +291,23 @@ func TestDASHVideoAudioBackupURLFallback(t *testing.T) {
 		t.Fatalf("AudioBackupURLs fallback leaked quota: used=%d want=%d", used, vStat.Size()+tStat.Size())
 	}
 }
+
+func TestAnimatedWebPExtractsFirstFrameCleanly(t *testing.T) {
+	animWebP := generateMedia(t, "anim.webp", "-f", "lavfi", "-i", "color=c=orange:s=96x72:r=5:d=0.6", "-c:v", "libwebp_anim", "-loop", "0")
+	p := newPreparation(t)
+	p.client = fixtureClient(map[string][]byte{"/anim.webp": animWebP})
+	artifact, err := p.prepareItem(context.Background(), model.Media{Kind: "image", URL: "https://cdn.example/anim.webp"}, nil)
+	if err != nil {
+		t.Fatalf("animated WebP first-frame decode failed: %v", err)
+	}
+	if artifact.Width != 96 || artifact.Height != 72 {
+		t.Fatalf("animated WebP dimensions = %dx%d, want 96x72", artifact.Width, artifact.Height)
+	}
+	stat, err := os.Stat(artifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used, _ := p.manager.Usage(); used != stat.Size() || p.bytes != stat.Size() {
+		t.Fatalf("animated WebP disk accounting mismatch: used=%d prep=%d file=%d", used, p.bytes, stat.Size())
+	}
+}
